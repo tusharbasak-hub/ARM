@@ -1,0 +1,80 @@
+ay decreases eventually in a pothole as person applies break 
+noticing something: when moving out of a pothole az increases more, compared to decrease in it when going in: the spring compresses on entry and releases energy on exit, often with more force.
+
+right tyre: 
+going in:
+gyro: wy increases and wx decreases 
+accelerometer: ax and ay increases (ax more than ay), az decreases then comes to zero quickly; impact of ax and az is more than ay)
+going out:
+gyro: wy decreases and wx increases
+accelerometer: ax, ay decreases then comes to zero 
+
+
+
+
+left tyre:
+going in: 
+gyro: wx, wy both decrease 
+acceleration: ax decrease, ay increase, az increase 
+going out: 
+opposite of going in
+
+
+
+both tyres:
+front: wx decrease then increase, back: wx increase then decrease
+
+
+
+
+see i saw if in 
+gyroscope:  
+
+x and y are simultaneously decreasing then increasing: left front tyre met a pothole
+
+x and y are simultanewously increasing then decresing: rear right tyre met a pothole 
+
+
+
+x increases y decreasess simultaneously followed by x decreasing and y increasing: rear left tyre met a pothole 
+
+
+
+x decreases  y increases simutaneously then x increases and y decreases simultaneously: front right tyre met a pothole 
+
+
+
+only x decreases followed by an increase (y remains almost unchanged) both front tyres met a big aah pothole 
+
+only x increases followed by an decrease (y remains almost unchanged) both back tyres met the big aah pothole 
+
+
+
+if a pothole is there we see a negative dip in az 
+sometimes a negative dip in ay too (due to applying breaks on the car) 
+
+
+
+0: good
+1: vibrations
+2: small pothole
+3: medium pothole
+4: big pothole
+
+write me a code for combining the files named as the image attached in present in the folder at r"../../../data/raw/multi_class_pothole"
+
+such that each column is as is in the new combined dataset... just with some lablel on the rows, and some rows removed 
+the CSVs (with required numeric labels mentioned: with row number) 
+1. (1, 63) : remove, (63, end): 4
+2. (1, 22): remove, (22, 420): 4, (420, 608): remove, (608, end): 4
+3. (1, end): 4
+4. (1, 270): remove, (270, end): 3
+5. (250, 450): 3, (remove rest)
+6. (1, 340): remove, (340, end): 2
+7. (1, end): 1
+8. (1, 990): remove, (990, end): 3
+9. (140, 420) 3, clip rest
+10. (1, end): 4
+11. (1, end): 2
+12. (1, 900): 0, (900, 1120): 2
+13. (1, 520): 1, (520, 910): 2, (910, end): 4
