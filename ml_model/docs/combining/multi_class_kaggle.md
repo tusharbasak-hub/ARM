@@ -86,7 +86,20 @@ Instead of simply taking every 10th row (which might drift if the sampling rate 
 
 ## 9. Combining Data
 
-I merged the processed `dataset_gps_mpu_mid.csv` files from all PVS folders into two files: first 6 columns into train and rest 3 into test at `ml_model\data\combined\multi_class_kaggle`
+I merged the processed `dataset_gps_mpu_mid.csv` files from all PVS folders into two files: PVS 1, 2, 4, 5, 7, 8 into train and 3, 6, 9 into test at `ml_model\data\combined\multi_class_kaggle`
+splited this way to make sure that model is tested on a completly new road, but it should be trained on all vehicle types
+| Dataset | Vehicle             | Driver   | Scenario   | Distance |
+|----------|---------------------|----------|------------|----------|
+| PVS 1    | Volkswagen Saveiro  | Driver 1 | Scenario 1 | 13.81 km |
+| PVS 2    | Volkswagen Saveiro  | Driver 1 | Scenario 2 | 11.62 km |
+| PVS 3    | Volkswagen Saveiro  | Driver 1 | Scenario 3 | 10.72 km |
+| PVS 4    | Fiat Bravo          | Driver 2 | Scenario 1 | 13.81 km |
+| PVS 5    | Fiat Bravo          | Driver 2 | Scenario 2 | 11.63 km |
+| PVS 6    | Fiat Bravo          | Driver 2 | Scenario 3 | 10.73 km |
+| PVS 7    | Fiat Palio          | Driver 3 | Scenario 1 | 13.78 km |
+| PVS 8    | Fiat Palio          | Driver 3 | Scenario 2 | 11.63 km |
+| PVS 9    | Fiat Palio          | Driver 3 | Scenario 3 | 10.74 km |
+
 
 ## 10. Unit Conversion
 

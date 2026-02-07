@@ -1,3 +1,4 @@
 data/raw/multi_class_kaggle/**
 data/combined/multi_class_kaggle/**
 data/combined/binary_kaggle.csv/
+data/raw/binary_kaggle/**
