@@ -17,46 +17,77 @@ class AggregationService {
      */
     async aggregateRoadSegment(roadSegmentId) {
         try {
-            // Get recent observations for this road segment
-            const cutoffTime = new Date(Date.now() - this.TIME_DECAY_HOURS * 60 * 60 * 1000);
-
-            const observations = await Observation.find({
-                roadSegmentId,
-                timestamp: { $gte: cutoffTime },
-                matchingConfidence: { $gte: 0.5 } // Only use high-confidence matches
-            }).sort({ timestamp: -1 });
-
-            if (observations.length < this.MIN_OBSERVATIONS) {
-                return null; // Not enough data for reliable aggregation
-            }
-
-            // Calculate weighted average with time decay
-            const aggregatedScore = this.calculateWeightedScore(observations);
-            const confidenceScore = this.calculateConfidenceScore(observations);
-            const distribution = this.calculateDistribution(observations);
-
-            // Update road segment
+            // Get road segment first to check for patch data
             const roadSegment = await RoadSegment.findOne({ roadSegmentId });
 
-            if (roadSegment) {
-                roadSegment.aggregatedQualityScore = aggregatedScore;
-                roadSegment.confidenceScore = confidenceScore;
-                roadSegment.observationCount = observations.length;
-                roadSegment.qualityDistribution = distribution;
-                roadSegment.lastUpdated = new Date();
-
-                await roadSegment.save();
-
-                return {
-                    roadSegmentId,
-                    aggregatedQualityScore: aggregatedScore,
-                    confidenceScore,
-                    observationCount: observations.length,
-                    distribution
-                };
+            if (!roadSegment) {
+                return null;
             }
 
-            return null;
+            // Check if segment has patch-based data
+            const totalPatchLength = (roadSegment.len1 || 0) + (roadSegment.len2 || 0) + (roadSegment.len3 || 0);
+            const hasPatchData = totalPatchLength >= 5; // At least 5m of patch data
+
+            let aggregatedScore;
+            let confidenceScore;
+            let distribution = null;
+            let scoringMethod;
+
+            if (hasPatchData) {
+                // Use patch-based scoring
+                const segmentLength = roadSegment.segmentLength || 100;
+                const len1 = roadSegment.len1 || 0;
+                const len2 = roadSegment.len2 || 0;
+                const len3 = roadSegment.len3 || 0;
+
+                // Calculate patch-based score: weighted average of severity
+                const patchScore = (len1 * 1 + len2 * 2 + len3 * 3) / segmentLength;
+                aggregatedScore = Math.min(Math.max(patchScore, 0), 3); // Clamp to 0-3
+
+                // Confidence based on coverage ratio and observation count
+                const coverageRatio = Math.min(totalPatchLength / segmentLength, 1.0);
+                const observationConfidence = Math.min((roadSegment.observationCount || 0) / 10, 1.0);
+                confidenceScore = coverageRatio * 0.6 + observationConfidence * 0.4;
+
+                scoringMethod = 'patch-based';
+            } else {
+                // Fallback to observation-based scoring
+                const cutoffTime = new Date(Date.now() - this.TIME_DECAY_HOURS * 60 * 60 * 1000);
+
+                const observations = await Observation.find({
+                    roadSegmentId,
+                    timestamp: { $gte: cutoffTime },
+                    matchingConfidence: { $gte: 0.5 }
+                }).sort({ timestamp: -1 });
+
+                if (observations.length < this.MIN_OBSERVATIONS) {
+                    return null; // Not enough data
+                }
+
+                aggregatedScore = this.calculateWeightedScore(observations);
+                confidenceScore = this.calculateConfidenceScore(observations);
+                distribution = this.calculateDistribution(observations);
+                scoringMethod = 'observation-based';
+            }
+
+            // Update road segment
+            roadSegment.aggregatedQualityScore = aggregatedScore;
+            roadSegment.confidenceScore = confidenceScore;
+            if (distribution) {
+                roadSegment.qualityDistribution = distribution;
+            }
+            roadSegment.lastUpdated = new Date();
+
+            await roadSegment.save();
+
+            return {
+                roadSegmentId,
+                aggregatedQualityScore: aggregatedScore,
+                confidenceScore,
+                observationCount: roadSegment.observationCount || 0,
+                distribution,
+                scoringMethod
+            };
         } catch (error) {
             console.error('Aggregation error:', error);
             throw error;

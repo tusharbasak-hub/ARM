@@ -5,11 +5,13 @@ const router = express.Router();
 const authRoutes = require('./auth');
 const observationRoutes = require('./observations');
 const roadRoutes = require('./roads');
+const routeRoutes = require('./routes');
 
 // Mount routes
 router.use('/auth', authRoutes);
 router.use('/observations', observationRoutes);
 router.use('/roads', roadRoutes);
+router.use('/routes', routeRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {

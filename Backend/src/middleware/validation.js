@@ -37,6 +37,39 @@ const schemas = {
         lat: Joi.number().min(-90).max(90).required(),
         lng: Joi.number().min(-180).max(180).required(),
         radius: Joi.number().min(100).max(50000).default(5000) // meters
+    }),
+
+    routeQuery: Joi.object({
+        sourceLat: Joi.number().min(-90).max(90).required(),
+        sourceLng: Joi.number().min(-180).max(180).required(),
+        destinationLat: Joi.number().min(-90).max(90).required(),
+        destinationLng: Joi.number().min(-180).max(180).required(),
+        maxRoutes: Joi.number().integer().min(1).max(5).default(3)
+    }),
+
+    patch: Joi.object({
+        startLatitude: Joi.number().min(-90).max(90).required(),
+        startLongitude: Joi.number().min(-180).max(180).required(),
+        endLatitude: Joi.number().min(-90).max(90).required(),
+        endLongitude: Joi.number().min(-180).max(180).required(),
+        severity: Joi.number().integer().min(1).max(3).required(),
+        patchLengthM: Joi.number().min(0).required(),
+        startTimestamp: Joi.date().iso().required(),
+        endTimestamp: Joi.date().iso().min(Joi.ref('startTimestamp')).required(), // FIX E: Ensure endTimestamp >= startTimestamp
+        deviceMetadata: Joi.object({
+            platform: Joi.string(),
+            appVersion: Joi.string()
+        }).optional()
+    }),
+
+    recentAlerts: Joi.object({
+        regionIds: Joi.array().items(Joi.string()).min(1).max(20).required(), // Up to 20 regions (user viewport + neighbors)
+        minSeverity: Joi.number().integer().min(1).max(3).default(2), // Default: show bad(2) and worst(3)
+        hoursBack: Joi.number().integer().min(1).max(168).default(72) // Default: 3 days, max 7 days
+    }),
+
+    mapSegments: Joi.object({
+        regionIds: Joi.array().items(Joi.string()).min(1).max(25).required() // Viewport + neighbors
     })
 };
 

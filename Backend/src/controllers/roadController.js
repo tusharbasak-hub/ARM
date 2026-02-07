@@ -37,6 +37,61 @@ exports.getRoadSegmentsByRegion = async (req, res, next) => {
 };
 
 /**
+ * Get map segments for complete road visualization
+ * Returns ALL segments (green/yellow/red) in viewport regions
+ */
+exports.getMapSegments = async (req, res, next) => {
+    try {
+        const { regionIds } = req.validatedQuery;
+
+        // Fetch all road segments with quality data in given regions
+        const roadSegments = await RoadSegment.find({
+            regionId: { $in: regionIds },
+            observationCount: { $gt: 0 } // Only segments with observations
+        })
+            .select('roadSegmentId geometry centerPoint aggregatedQualityScore observationCount regionId lastUpdated')
+            .lean()
+            .limit(1000); // Cap to prevent huge payloads
+
+        // Transform to map-friendly format with color coding
+        const segments = roadSegments.map(seg => {
+            const score = seg.aggregatedQualityScore ?? 1.0; // Default to good if no score
+
+            // Color logic: 0-1=green, 1-2=yellow, 2-3=red
+            let color = 'green';
+            let quality = 'good';
+            if (score >= 2) {
+                color = 'red';
+                quality = 'bad';
+            } else if (score >= 1) {
+                color = 'orange';
+                quality = 'moderate';
+            }
+
+            return {
+                roadSegmentId: seg.roadSegmentId,
+                geometry: seg.geometry, // LineString with coordinates
+                score: Number(score.toFixed(2)),
+                color,
+                quality,
+                observationCount: seg.observationCount,
+                lastUpdated: seg.lastUpdated
+            };
+        });
+
+        res.json({
+            success: true,
+            data: {
+                segments,
+                count: segments.length
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * Get nearby road segments
  */
 exports.getNearbyRoadSegments = async (req, res, next) => {
