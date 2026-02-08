@@ -12,6 +12,13 @@ const optionalAuthenticateFirebase = require('../middleware/optionalFirebaseAuth
 router.get('/region/:regionId', optionalAuthenticateFirebase, roadController.getRoadSegmentsByRegion);
 
 /**
+ * @route   GET /api/roads/map
+ * @desc    Get all road segments for map visualization (green/yellow/red)
+ * @access  Public
+ */
+router.get('/map', validateQuery('mapSegments'), roadController.getMapSegments);
+
+/**
  * @route   GET /api/roads/nearby
  * @desc    Get nearby road segments
  * @access  Public
