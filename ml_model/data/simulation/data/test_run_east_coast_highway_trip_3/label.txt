@@ -1,0 +1,14 @@
+0- 468: irrelavant
+507 - 525: small pothole
+607 - 621: medium pothole
+668 - 776: vibrations
+781 - 801: big pothole
+950 - 990: speed bump
+1083 - 1106: medium pothole
+1206 - 1360: vibrations
+1439 - 1467: big pothole 
+1596 - 1620: speed bump
+1687 - 1703: medium pothole
+1765 - 1918: vibrations 
+2011 - 2041: big pothole 
+3602 - end: irrelavant
