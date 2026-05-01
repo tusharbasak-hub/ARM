@@ -1,7 +1,0 @@
-data/raw/multi_class_kaggle/**
-data/combined/multi_class_kaggle/**
-data/combined/binary_kaggle.csv/
-data/raw/binary_kaggle/**
-data/simulation/data/**/dashcam.mp4
-data/simulation/data/test_run_east_coast_highway_fixed/
-src/model/spectrogram/

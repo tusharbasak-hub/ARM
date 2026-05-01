@@ -26,3 +26,9 @@ build/
 # OS
 .DS_Store
 Thumbs.ds_Store
+
+
+# ML
+ml_model_work
+desktop.ini
+final stuff

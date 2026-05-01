@@ -1,7 +1,0 @@
-please download this dataset into the data/raw/multi_class_kaggle
-
-https://www.kaggle.com/datasets/jefmenegazzo/pvs-passive-vehicular-sensors-datasets/data?select=PVS+2
-
-
-and this into data/raw/binary_kaggle
-https://www.kaggle.com/datasets/dextergoes/pothole-sensor-data
