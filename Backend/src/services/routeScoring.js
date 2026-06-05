@@ -1,4 +1,9 @@
-// services/routeScoring.js
+// ==========================================
+// FILE: Backend/src/services/routeScoring.js
+// ==========================================
+
+'use strict';
+
 const axios = require('axios');
 const RoadSegment = require('../models/RoadSegment');
 const { getRedisClient } = require('../config/redis');
@@ -10,91 +15,88 @@ class RouteScoringService {
     this.mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
     this.mapboxBaseUrl = 'https://api.mapbox.com/directions/v5/mapbox/driving';
 
-    // Weights (tuneable)
+    // Weights (tuneable parameters)
     this.QUALITY_WEIGHT = Number(process.env.ROUTE_QUALITY_WEIGHT ?? 0.7);
     this.DISTANCE_WEIGHT = Number(process.env.ROUTE_DISTANCE_WEIGHT ?? 0.3);
 
-    // Segment settings
-    this.TARGET_SAMPLE_STEP_M = Number(process.env.ROUTE_SAMPLE_STEP_M ?? 75); // sample approx every 75m
-    this.MATCH_TOLERANCE_M = Number(process.env.ROUTE_MATCH_TOLERANCE_M ?? 120); // nearest centerPoint within 120m
+    // Segment sampling settings
+    this.TARGET_SAMPLE_STEP_M = Number(process.env.ROUTE_SAMPLE_STEP_M ?? 75); 
+    this.MATCH_TOLERANCE_M = Number(process.env.ROUTE_MATCH_TOLERANCE_M ?? 120); 
 
-    // Missing data behavior
-    // 0 best .. 3 worst
+    // Missing telemetry fallback behavior (1.0 = baseline good road)
     this.DEFAULT_QUALITY_SCORE = Number(process.env.ROUTE_DEFAULT_QUALITY_SCORE ?? 1.0);
 
-    // Distance guardrail: prevent silly long route
-    // If a route is > (1 + 0.80) = 180% of shortest, penalize heavily
+    // Distance guardrail parameters
     this.MAX_OVERAGE_RATIO = Number(process.env.ROUTE_MAX_OVERAGE_RATIO ?? 0.8);
-    this.OVERAGE_PENALTY = Number(process.env.ROUTE_OVERAGE_PENALTY ?? 0.35); // add to finalScore
+    this.OVERAGE_PENALTY = Number(process.env.ROUTE_OVERAGE_PENALTY ?? 0.35); 
 
-    // Cache
-    this.CACHE_TTL = Number(process.env.ROUTE_CACHE_TTL ?? 900); // 15 min recommended for "current time"
-    this.FRESHNESS_SAMPLE_K = Number(process.env.ROUTE_FRESHNESS_SAMPLE_K ?? 8); // fingerprint top K segments
+    // Redis Cache TTL management configurations
+    this.CACHE_TTL = Number(process.env.ROUTE_CACHE_TTL ?? 900); 
+    this.FRESHNESS_SAMPLE_K = Number(process.env.ROUTE_FRESHNESS_SAMPLE_K ?? 8); 
     this.SIGNIFICANT_SCORE_CHANGE = Number(process.env.ROUTE_SIGNIFICANT_SCORE_CHANGE ?? 0.25);
   }
 
   /* =========================
-     Public APIs
-  ========================= */
+      Public APIs
+     ========================= */
 
   async getAndScoreRoutes(source, destination, maxRoutes = 3) {
-    if (!this.mapboxToken) throw new Error('Mapbox token missing');
+    if (!this.mapboxToken) throw new Error('Mapbox access token is missing');
 
     const cacheKey = this.generateCacheKey(source, destination, maxRoutes);
-
     const cached = await this.getCached(cacheKey);
     if (cached) return cached;
 
-    // 1) Fetch candidate routes from Mapbox
+    // 1) Fetch candidate routes from Mapbox engine layer
     const mapboxRoutes = await this.fetchMapboxRoutes(source, destination, maxRoutes);
     if (!mapboxRoutes?.length) throw new Error('No routes found between source and destination');
 
-    // 2) Decode & pre-sample points for each route
+    // 2) Decode polyline matrix and pre-sample spatial markers
     const prepared = mapboxRoutes.map(r => this.prepareRouteGeometry(r));
 
-    // 3) Prefetch candidate road segments ONCE (for all routes)
+    // 3) Prefetch candidate segment lines in ONE non-blocking batch DB query
     const regionIds = this.collectAllRegions(prepared);
     const candidateSegments = await this.fetchCandidateSegments(regionIds);
 
-    // 4) Score each route using in-memory matching
+    // 4) Execute spatial matching engine layer inside system memory
     const scored = prepared.map(p => this.scorePreparedRoute(p, candidateSegments));
 
-    // 5) Normalize distance across candidates & compute finalScore
+    // 5) Apply normalization constraints over distance vector arrays
     this.applyFinalScoring(scored);
 
-    // 6) Sort and create response
+    // 6) Structural sorting based on performance metrics
     scored.sort((a, b) => a.finalScore - b.finalScore);
     const result = this.prepareResult(scored, source, destination);
 
-    // 7) Cache with fingerprint for freshness checks
+    // 7) Write back to Redis high-speed cache memory line
     await this.setCached(cacheKey, result);
 
     return result;
   }
 
-  // Optional endpoint use
   async scoreRoute(mapboxRoute) {
     const prepared = this.prepareRouteGeometry(mapboxRoute);
     const regionIds = this.collectAllRegions([prepared]);
     const candidateSegments = await this.fetchCandidateSegments(regionIds);
     const scored = this.scorePreparedRoute(prepared, candidateSegments);
 
-    // For single route preview, finalScore is less meaningful (no competing routes),
-    // still compute a "self-normalized" distance (0).
     scored.finalScore = (scored.normalizedQuality * this.QUALITY_WEIGHT);
     return scored;
   }
 
+  /**
+   * Aligned Global Rating Engine
+   * Directly synchronized with RoadSegment constants to eliminate frontend mismatch.
+   */
   getQualityRating(score) {
-    if (score <= 0.5) return 'Excellent';
-    if (score <= 1.5) return 'Good';
-    if (score <= 2.5) return 'Fair';
-    return 'Poor';
+    if (score < 1.5) return 'Good';
+    if (score < 2.5) return 'Moderate';
+    return 'Bad';
   }
 
   /* =========================
-     Mapbox
-  ========================= */
+      Mapbox API Connection
+     ========================= */
 
   async fetchMapboxRoutes(source, destination, maxRoutes) {
     try {
@@ -112,43 +114,42 @@ class RouteScoringService {
       const res = await axios.get(url, { params, timeout: 10000 });
 
       if (res.data?.code !== 'Ok' || !Array.isArray(res.data.routes)) {
-        throw new Error('Mapbox API returned no routes');
+        throw new Error('Mapbox API returned an invalid response code');
       }
 
       return res.data.routes.slice(0, maxRoutes);
     } catch (err) {
       if (err.response) {
-        throw new Error(`Mapbox API error: ${err.response.data?.message || err.message}`);
+        throw new Error(`Mapbox API transmission error: ${err.response.data?.message || err.message}`);
       }
-      throw new Error(`Failed to fetch routes: ${err.message}`);
+      throw new Error(`Failed to establish interface connection: ${err.message}`);
     }
   }
 
   /* =========================
-     Geometry & Sampling
-  ========================= */
+      Geometry Processing Layers
+     ========================= */
 
   prepareRouteGeometry(mapboxRoute) {
-    const coords = polyline.decode(mapboxRoute.geometry, 6); // returns [lat,lng]
+    const coords = polyline.decode(mapboxRoute.geometry, 6); 
     if (!coords?.length) {
       return {
         geometry: mapboxRoute.geometry,
         distance: mapboxRoute.distance || 0,
         duration: mapboxRoute.duration || 0,
         sampledPoints: [],
-        sampledEdges: [] // [{from,to,edgeLenM}]
+        sampledEdges: []
       };
     }
 
-    // Sample approximately every TARGET_SAMPLE_STEP_M along polyline
     const { points, edges } = this.sampleAlongPolyline(coords, this.TARGET_SAMPLE_STEP_M);
 
     return {
       geometry: mapboxRoute.geometry,
-      distance: mapboxRoute.distance || (this.polylineLengthMeters(coords)),
+      distance: mapboxRoute.distance || this.polylineLengthMeters(coords),
       duration: mapboxRoute.duration || 0,
-      sampledPoints: points, // [{lat,lng, regionId}]
-      sampledEdges: edges     // [{aIdx,bIdx,lenM}]
+      sampledPoints: points, 
+      sampledEdges: edges     
     };
   }
 
@@ -156,7 +157,6 @@ class RouteScoringService {
     const points = [];
     const edges = [];
 
-    // Always include start
     let last = { lat: latlngs[0][0], lng: latlngs[0][1] };
     points.push(this.enrichPoint(last));
 
@@ -166,14 +166,12 @@ class RouteScoringService {
       const curr = { lat: latlngs[i][0], lng: latlngs[i][1] };
       let segLen = haversineMeters(last.lat, last.lng, curr.lat, curr.lng);
 
-      // If too small, move on accumulating
       if (segLen <= 0.001) {
         last = curr;
         continue;
       }
 
       while (carry + segLen >= stepM) {
-        // Interpolate new point on this segment
         const remain = stepM - carry;
         const t = remain / segLen;
 
@@ -188,7 +186,6 @@ class RouteScoringService {
 
         edges.push({ aIdx: prevIdx, bIdx: newIdx, lenM: stepM });
 
-        // Now continue from interp point to curr
         last = interp;
         segLen = haversineMeters(last.lat, last.lng, curr.lat, curr.lng);
         carry = 0;
@@ -198,7 +195,6 @@ class RouteScoringService {
       last = curr;
     }
 
-    // Include end point if not very close to last sampled
     const end = { lat: latlngs[latlngs.length - 1][0], lng: latlngs[latlngs.length - 1][1] };
     const lastP = points[points.length - 1];
     const tailLen = haversineMeters(lastP.lat, lastP.lng, end.lat, end.lng);
@@ -214,8 +210,7 @@ class RouteScoringService {
   }
 
   enrichPoint(p) {
-    const regionId = getRegionId(p.lat, p.lng);
-    return { ...p, regionId };
+    return { ...p, regionId: getRegionId(p.lat, p.lng) };
   }
 
   polylineLengthMeters(latlngs) {
@@ -227,15 +222,14 @@ class RouteScoringService {
   }
 
   /* =========================
-     Candidate Segments Prefetch
-  ========================= */
+      Data Extraction Filters
+     ========================= */
 
   collectAllRegions(preparedRoutes) {
     const regionSet = new Set();
     for (const r of preparedRoutes) {
       for (const p of r.sampledPoints) {
         regionSet.add(p.regionId);
-        // include neighbors for better match
         const neighbors = getNeighbors(p.regionId);
         for (const n of neighbors) regionSet.add(n);
       }
@@ -244,32 +238,28 @@ class RouteScoringService {
   }
 
   async fetchCandidateSegments(regionIds) {
-    // Prefetch segments for all relevant regions in ONE query
-    // Keep it light: we only need centerPoint + score.
-    const segments = await RoadSegment.find({
-      regionId: { $in: regionIds }
-    }).select('roadSegmentId centerPoint aggregatedQualityScore observationCount lastUpdated');
+    // Lean query applied for sub-millisecond document hydration
+    const segments = await RoadSegment.find({ regionId: { $in: regionIds } })
+      .select('roadSegmentId centerPoint aggregatedQualityScore observationCount lastUpdated')
+      .lean();
 
-    // Convert to array of usable objects
     return segments.map(s => ({
       roadSegmentId: s.roadSegmentId,
       lat: s.centerPoint?.coordinates?.[1],
       lng: s.centerPoint?.coordinates?.[0],
-      score: (s.aggregatedQualityScore ?? null),
-      observationCount: s.observationCount ?? 0,
-      lastUpdated: s.lastUpdated ?? null
+      score: s.aggregatedQualityScore,
+      observationCount: s.observationCount || 0,
+      lastUpdated: s.lastUpdated || null
     })).filter(x => typeof x.lat === 'number' && typeof x.lng === 'number');
   }
 
   /* =========================
-     Scoring (In-memory nearest match)
-  ========================= */
+      Core Computational Engine
+     ========================= */
 
   scorePreparedRoute(preparedRoute, candidateSegments) {
     const { sampledPoints, sampledEdges } = preparedRoute;
 
-    // Map each sampled point to nearest candidate segment
-    // We'll then accumulate weighted quality per edge length.
     const matched = sampledPoints.map(p => {
       const nearest = findNearestInMemory(p.lat, p.lng, candidateSegments, this.MATCH_TOLERANCE_M);
       if (!nearest) {
@@ -283,10 +273,8 @@ class RouteScoringService {
       }
 
       const score = (typeof nearest.score === 'number') ? nearest.score : this.DEFAULT_QUALITY_SCORE;
-      const hasData = (typeof nearest.score === 'number');
-
       return {
-        hasData,
+        hasData: (typeof nearest.score === 'number'),
         roadSegmentId: nearest.roadSegmentId,
         qualityScore: score,
         observationCount: nearest.observationCount,
@@ -294,17 +282,14 @@ class RouteScoringService {
       };
     });
 
-    // Now compute distance-weighted route quality using edges
     let weightedSum = 0;
     let lengthSum = 0;
-
-    // Also compute segment-level stats
     const usedSegmentIds = new Set();
-    const segmentScores = {}; // FIX D: Track each segment's score for cache fingerprinting
+    const segmentScores = {}; 
     let segmentsWithData = 0;
 
     for (const e of sampledEdges) {
-      const segInfo = matched[e.bIdx]; // quality at end point of that edge
+      const segInfo = matched[e.bIdx]; 
       const q = segInfo?.qualityScore ?? this.DEFAULT_QUALITY_SCORE;
 
       weightedSum += q * e.lenM;
@@ -312,18 +297,14 @@ class RouteScoringService {
 
       if (segInfo?.roadSegmentId) {
         usedSegmentIds.add(segInfo.roadSegmentId);
-        segmentScores[segInfo.roadSegmentId] = segInfo.qualityScore; // Store score snapshot
+        segmentScores[segInfo.roadSegmentId] = segInfo.qualityScore; 
       }
     }
 
-    // count data points with real data (approx)
-    for (const m of matched) if (m.hasData) segmentsWithData++;
+    for (const m of matched) { if (m.hasData) segmentsWithData++; }
 
     const roadQualityScore = lengthSum > 0 ? (weightedSum / lengthSum) : this.DEFAULT_QUALITY_SCORE;
-
-    // normalize quality 0..1
     const normalizedQuality = clamp01(roadQualityScore / 3);
-
     const distanceKm = (preparedRoute.distance || 0) / 1000;
 
     return {
@@ -333,20 +314,17 @@ class RouteScoringService {
       distanceKm,
       roadQualityScore,
       normalizedQuality,
-      // filled later in applyFinalScoring:
       normalizedDistance: 0,
       finalScore: 0,
       segmentCount: usedSegmentIds.size,
       segmentsWithData,
       dataCompleteness: sampledPoints.length > 0 ? (segmentsWithData / sampledPoints.length) : 0,
-      // Store some details for caching / debug
-      segmentDetails: Array.from(usedSegmentIds).slice(0, 200), // cap to avoid huge payload
-      segmentScores // FIX D: Include scores for cache fingerprinting
+      segmentDetails: Array.from(usedSegmentIds).slice(0, 200), 
+      segmentScores 
     };
   }
 
   applyFinalScoring(scoredRoutes) {
-    // Normalize distance relative to current candidates
     const distances = scoredRoutes.map(r => r.distanceKm);
     const minD = Math.min(...distances);
     const maxD = Math.max(...distances);
@@ -355,11 +333,9 @@ class RouteScoringService {
     for (const r of scoredRoutes) {
       r.normalizedDistance = clamp01((r.distanceKm - minD) / denom);
 
-      // Base weighted score
       let score = (r.normalizedQuality * this.QUALITY_WEIGHT) +
-        (r.normalizedDistance * this.DISTANCE_WEIGHT);
+                  (r.normalizedDistance * this.DISTANCE_WEIGHT);
 
-      // Guardrail: penalize silly long routes even if quality is good
       if (r.distanceKm > minD * (1 + this.MAX_OVERAGE_RATIO)) {
         score += this.OVERAGE_PENALTY;
       }
@@ -367,10 +343,6 @@ class RouteScoringService {
       r.finalScore = score;
     }
   }
-
-  /* =========================
-     Result + Recommendation
-  ========================= */
 
   prepareResult(scoredRoutes, source, destination) {
     const routes = scoredRoutes.map((r, idx) => ({
@@ -389,48 +361,39 @@ class RouteScoringService {
     }));
 
     const bestRoute = routes[0];
-
     const reason = this.generateRecommendation(routes);
 
-    // FIX D: Fingerprint stores per-segment score snapshots for accurate freshness checking
     const topSegments = (scoredRoutes[0]?.segmentDetails || []).slice(0, this.FRESHNESS_SAMPLE_K);
     const fingerprint = {
       segments: topSegments.map(segId => ({
         roadSegmentId: segId,
         scoreSnapshot: scoredRoutes[0]?.segmentScores?.[segId] ?? this.DEFAULT_QUALITY_SCORE
       })),
-      bestRoadQualityScore: scoredRoutes[0]?.roadQualityScore ?? this.DEFAULT_QUALITY_SCORE // keep for backward compat
+      bestRoadQualityScore: scoredRoutes[0]?.roadQualityScore ?? this.DEFAULT_QUALITY_SCORE 
     };
 
-    return {
-      source,
-      destination,
-      routes,
-      bestRoute: { ...bestRoute, reason },
-      fingerprint,
-      timestamp: new Date().toISOString()
-    };
+    return { source, destination, routes, bestRoute: { ...bestRoute, reason }, fingerprint, timestamp: new Date().toISOString() };
   }
 
   generateRecommendation(routes) {
     const best = routes[0];
-    if (routes.length === 1) return `Only route available. Road quality: ${best.qualityRating}.`;
+    if (routes.length === 1) return `Only route available. Road quality is ${best.qualityRating.toLowerCase()}.`;
 
     const shortest = Math.min(...routes.map(r => r.distanceKm));
     const bestQuality = Math.min(...routes.map(r => r.roadQualityScore));
 
     const reasons = [];
     if (best.distanceKm === shortest) reasons.push('shortest distance');
-    if (best.roadQualityScore === bestQuality) reasons.push(`best road quality (${best.qualityRating})`);
+    if (best.roadQualityScore === bestQuality) reasons.push(`best road quality (${best.qualityRating.toLowerCase()})`);
 
     if (reasons.length === 2) return `Optimal balance of ${reasons[0]} and ${reasons[1]}.`;
     if (reasons.length === 1) return `Best overall choice due to ${reasons[0]}.`;
-    return `Best weighted combination of distance and road quality.`;
+    return `Best weighted combination of distance and road quality parameters.`;
   }
 
   /* =========================
-     Cache (Redis) + Freshness
-  ========================= */
+      Caching Subsystem Layer
+     ========================= */
 
   generateCacheKey(source, destination, maxRoutes) {
     const src = `${source.latitude.toFixed(4)},${source.longitude.toFixed(4)}`;
@@ -447,7 +410,6 @@ class RouteScoringService {
       if (!raw) return null;
 
       const parsed = JSON.parse(raw);
-
       const ok = await this.isCacheFresh(parsed);
       if (!ok) {
         await redis.del(cacheKey);
@@ -463,35 +425,27 @@ class RouteScoringService {
   async setCached(cacheKey, value) {
     const redis = getRedisClient();
     if (!redis) return;
-
     try {
       await redis.setEx(cacheKey, this.CACHE_TTL, JSON.stringify(value));
-    } catch (err) {
-      // ignore cache errors
-    }
+    } catch (err) { /* silent fail */ }
   }
 
   async isCacheFresh(cachedResult) {
     try {
       const fp = cachedResult?.fingerprint;
-      // FIX D: Support both old (segmentIds) and new (segments array) fingerprint formats
       const segmentData = fp?.segments || [];
       const legacyIds = fp?.segmentIds || [];
 
       if (!segmentData.length && !legacyIds.length) return true;
 
-      // Build query for all segment IDs
-      const allIds = segmentData.length
-        ? segmentData.map(s => s.roadSegmentId)
-        : legacyIds;
+      const allIds = segmentData.length ? segmentData.map(s => s.roadSegmentId) : legacyIds;
 
-      const segments = await RoadSegment.find({
-        roadSegmentId: { $in: allIds }
-      }).select('roadSegmentId aggregatedQualityScore');
+      const segments = await RoadSegment.find({ roadSegmentId: { $in: allIds } })
+        .select('roadSegmentId aggregatedQualityScore')
+        .lean();
 
       const currentScores = new Map(segments.map(s => [s.roadSegmentId, s.aggregatedQualityScore]));
 
-      // Compare each segment's current score to its own snapshot (not to bestRoadQualityScore)
       if (segmentData.length) {
         for (const { roadSegmentId, scoreSnapshot } of segmentData) {
           const current = currentScores.get(roadSegmentId);
@@ -501,7 +455,6 @@ class RouteScoringService {
           if (diff > this.SIGNIFICANT_SCORE_CHANGE) return false;
         }
       } else {
-        // Legacy format fallback: compare to bestRoadQualityScore
         for (const id of legacyIds) {
           const current = currentScores.get(id);
           if (typeof current !== 'number') continue;
@@ -512,15 +465,14 @@ class RouteScoringService {
 
       return true;
     } catch (err) {
-      // On error, keep cache (avoid server load spikes)
-      return true;
+      return true; 
     }
   }
 }
 
 /* =========================
-   Helpers
-========================= */
+    Geospatial Core Math
+   ========================= */
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -528,12 +480,10 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 function findNearestInMemory(lat, lng, segments, maxDistM) {

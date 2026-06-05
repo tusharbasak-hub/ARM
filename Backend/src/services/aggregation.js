@@ -1,187 +1,211 @@
-const RoadSegment = require('../models/RoadSegment');
-const Observation = require('../models/Observation');
+// ==========================================
+// FILE: Backend/src/services/aggregation.js
+// ==========================================
 
 /**
- * Service for aggregating road quality data
+ * Aggregation Service — Advanced Exponential Decay & Crowd Consensus
+ *
+ * This service is the single source of truth for:
+ * 1. Exponentially decayed rolling IRI average per RoadSegment
+ * 2. Derived colour category (iriCategory)
+ * 3. "segment-polyline-update" Socket.IO broadcast
+ *
+ * ── Design Principles ─────────────────────────────────────────────────────
+ *
+ * • EXPONENTIAL TIME DECAY (Self-Healing Map)
+ * Observations age out over time. Formula: w = e^(-age / tau)
+ * tau is 24 hours. Data older than 7 days is discarded entirely.
+ * This ensures a newly repaired road instantly overrides old bad data.
+ *
+ * • CROWD CONSENSUS (1 User = 1 Vote)
+ * Observations are first grouped by deviceId before averaging for the segment.
+ * Prevents a single user from skewing the map by driving back and forth.
+ *
+ * • POTHOLES DO NOT AFFECT POLYLINE COLOUR
+ * Segment colour is IRI-pure (general road wear).
  */
-class AggregationService {
-    constructor() {
-        this.TIME_DECAY_HOURS = parseInt(process.env.TIME_DECAY_HOURS) || 24;
-        this.MIN_OBSERVATIONS = parseInt(process.env.MIN_OBSERVATIONS_FOR_AGGREGATION) || 3;
-    }
 
-    /**
-     * Aggregate observations for a road segment
-     * @param {string} roadSegmentId 
-     * @returns {Object} Aggregated quality data
-     */
-    async aggregateRoadSegment(roadSegmentId) {
-        try {
-            // Get road segment first to check for patch data
-            const roadSegment = await RoadSegment.findOne({ roadSegmentId });
+'use strict';
 
-            if (!roadSegment) {
-                return null;
-            }
+const mongoose = require('mongoose');
+const Observation = require('../models/Observation');
+const RoadSegment = require('../models/RoadSegment');
+const { IRI_CATEGORY, IRI_THRESHOLD_GOOD, IRI_THRESHOLD_MODERATE } = require('../models/RoadSegment');
+const { getIO } = require('../socket');
 
-            // Check if segment has patch-based data
-            const totalPatchLength = (roadSegment.len1 || 0) + (roadSegment.len2 || 0) + (roadSegment.len3 || 0);
-            const hasPatchData = totalPatchLength >= 5; // At least 5m of patch data
+// ── Constants for Decay Math ──────────────────────────────────────────────
+const TAU_MS = 24 * 60 * 60 * 1000;              // 24 Hours
+const MAX_DATA_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 Days cut-off
 
-            let aggregatedScore;
-            let confidenceScore;
-            let distribution = null;
-            let scoringMethod;
+// ── IRI category derivation ────────────────────────────────────────────────
 
-            if (hasPatchData) {
-                // Use patch-based scoring
-                const segmentLength = roadSegment.segmentLength || 100;
-                const len1 = roadSegment.len1 || 0;
-                const len2 = roadSegment.len2 || 0;
-                const len3 = roadSegment.len3 || 0;
-
-                // Calculate patch-based score: weighted average of severity
-                const patchScore = (len1 * 1 + len2 * 2 + len3 * 3) / segmentLength;
-                aggregatedScore = Math.min(Math.max(patchScore, 0), 3); // Clamp to 0-3
-
-                // Confidence based on coverage ratio and observation count
-                const coverageRatio = Math.min(totalPatchLength / segmentLength, 1.0);
-                const observationConfidence = Math.min((roadSegment.observationCount || 0) / 10, 1.0);
-                confidenceScore = coverageRatio * 0.6 + observationConfidence * 0.4;
-
-                scoringMethod = 'patch-based';
-            } else {
-                // Fallback to observation-based scoring
-                const cutoffTime = new Date(Date.now() - this.TIME_DECAY_HOURS * 60 * 60 * 1000);
-
-                const observations = await Observation.find({
-                    roadSegmentId,
-                    timestamp: { $gte: cutoffTime },
-                    matchingConfidence: { $gte: 0.5 }
-                }).sort({ timestamp: -1 });
-
-                if (observations.length < this.MIN_OBSERVATIONS) {
-                    return null; // Not enough data
-                }
-
-                aggregatedScore = this.calculateWeightedScore(observations);
-                confidenceScore = this.calculateConfidenceScore(observations);
-                distribution = this.calculateDistribution(observations);
-                scoringMethod = 'observation-based';
-            }
-
-            // Update road segment
-            roadSegment.aggregatedQualityScore = aggregatedScore;
-            roadSegment.confidenceScore = confidenceScore;
-            if (distribution) {
-                roadSegment.qualityDistribution = distribution;
-            }
-            roadSegment.lastUpdated = new Date();
-
-            await roadSegment.save();
-
-            return {
-                roadSegmentId,
-                aggregatedQualityScore: aggregatedScore,
-                confidenceScore,
-                observationCount: roadSegment.observationCount || 0,
-                distribution,
-                scoringMethod
-            };
-        } catch (error) {
-            console.error('Aggregation error:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Calculate weighted quality score with time decay
-     */
-    calculateWeightedScore(observations) {
-        const now = Date.now();
-        let weightedSum = 0;
-        let totalWeight = 0;
-
-        observations.forEach(obs => {
-            const ageMs = now - new Date(obs.timestamp).getTime();
-            const ageHours = ageMs / (60 * 60 * 1000);
-
-            // Exponential time decay
-            const timeWeight = Math.exp(-ageHours / this.TIME_DECAY_HOURS);
-
-            // Speed-based weight (lower speed = more accurate observation)
-            let speedWeight = 1.0;
-            if (obs.speed < 5) speedWeight = 1.2;
-            else if (obs.speed > 20) speedWeight = 0.7;
-
-            // Matching confidence weight
-            const matchWeight = obs.matchingConfidence || 0.8;
-
-            const weight = timeWeight * speedWeight * matchWeight;
-
-            weightedSum += obs.roadQuality * weight;
-            totalWeight += weight;
-        });
-
-        return totalWeight > 0 ? weightedSum / totalWeight : 0;
-    }
-
-    /**
-     * Calculate confidence score based on data quality
-     */
-    calculateConfidenceScore(observations) {
-        const n = observations.length;
-
-        // More observations = higher confidence
-        let sampleConfidence = Math.min(n / 20, 1.0);
-
-        // Calculate variance (lower variance = higher confidence)
-        const mean = observations.reduce((sum, obs) => sum + obs.roadQuality, 0) / n;
-        const variance = observations.reduce((sum, obs) =>
-            sum + Math.pow(obs.roadQuality - mean, 2), 0) / n;
-        const varianceConfidence = Math.max(0, 1 - variance / 2);
-
-        // Recency (more recent data = higher confidence)
-        const avgAge = observations.reduce((sum, obs) =>
-            sum + (Date.now() - new Date(obs.timestamp).getTime()), 0) / n;
-        const avgAgeHours = avgAge / (60 * 60 * 1000);
-        const recencyConfidence = Math.exp(-avgAgeHours / (this.TIME_DECAY_HOURS * 2));
-
-        // Combined confidence
-        return (sampleConfidence * 0.4 + varianceConfidence * 0.3 + recencyConfidence * 0.3);
-    }
-
-    /**
-     * Calculate quality distribution
-     */
-    calculateDistribution(observations) {
-        const dist = { excellent: 0, good: 0, bad: 0, worst: 0 };
-
-        observations.forEach(obs => {
-            switch (obs.roadQuality) {
-                case 0: dist.excellent++; break;
-                case 1: dist.good++; break;
-                case 2: dist.bad++; break;
-                case 3: dist.worst++; break;
-            }
-        });
-
-        return dist;
-    }
-
-    /**
-     * Check if aggregation should trigger update broadcast
-     */
-    shouldBroadcastUpdate(oldScore, newScore, confidenceScore) {
-        // Only broadcast if:
-        // 1. Confidence is high enough
-        if (confidenceScore < 0.5) return false;
-
-        // 2. Score changed significantly (> 0.3 on 0-3 scale)
-        if (oldScore !== null && Math.abs(newScore - oldScore) < 0.3) return false;
-
-        return true;
-    }
+function deriveCategory(avg) {
+  if (avg < IRI_THRESHOLD_GOOD)     return IRI_CATEGORY.GOOD;     // 'green'
+  if (avg < IRI_THRESHOLD_MODERATE) return IRI_CATEGORY.MODERATE; // 'yellow'
+  return IRI_CATEGORY.BAD;                                        // 'orange'
 }
 
-module.exports = new AggregationService();
+// ── Deduplication lock: prevent thundering-herd on the same segment ────────
+const _inFlight = new Set();
+
+// ── Core update function ───────────────────────────────────────────────────
+
+/**
+ * Recalculate IRI stats for a RoadSegment using Time Decay & Consensus, and broadcast.
+ */
+async function updateSegment(segmentId) {
+  const key = String(segmentId);
+
+  if (_inFlight.has(key)) return;
+  _inFlight.add(key);
+
+  try {
+    const objectId = typeof segmentId === 'string'
+      ? new mongoose.Types.ObjectId(segmentId)
+      : segmentId;
+
+    const cutoffDate = new Date(Date.now() - MAX_DATA_AGE_MS);
+
+    // ── 1. Aggregate IRI stats from the DB (Decay + Consensus) ─────────────
+    const [result] = await Observation.aggregate([
+      {
+        // Step A: Filter by segment AND discard dead data (older than 7 days)
+        $match: {
+          roadSegmentId: objectId,
+          recordedAt: { $gte: cutoffDate }
+        },
+      },
+      {
+        // Step B: Calculate Age in milliseconds
+        $addFields: {
+          ageMs: { $subtract: [new Date(), '$recordedAt'] }
+        }
+      },
+      {
+        // Step C: Calculate Exponential Weight: w = e^(-ageMs / TAU_MS)
+        $addFields: {
+          weight: { 
+            $exp: { $divide: [ { $multiply: [-1, '$ageMs'] }, TAU_MS ] } 
+          }
+        }
+      },
+      {
+        // Step D: Calculate Weighted IRI
+        $addFields: {
+          weightedIri: { $multiply: ['$iriScore', '$weight'] }
+        }
+      },
+      {
+        // Step E: Group by User (deviceId) - 1 User = 1 Average Vote
+        $group: {
+          _id: { 
+            deviceId: { $ifNull: ['$deviceId', '$_id'] }, 
+            segmentId: '$roadSegmentId' 
+          },
+          userWeightedIriSum: { $sum: '$weightedIri' },
+          userWeightSum:      { $sum: '$weight' }
+        },
+      },
+      {
+        // Step F: Group by Segment - Sum up all Unique Users' votes
+        $group: {
+          _id: '$_id.segmentId',
+          totalWeightedIri: { $sum: '$userWeightedIriSum' },
+          totalWeight:      { $sum: '$userWeightSum' },
+          uniqueUsers:      { $sum: 1 }
+        },
+      },
+      {
+        // Step G: Final Math (Total Weighted IRI / Total Weight)
+        $project: {
+          averageIri: { 
+            $cond: [
+              { $eq: ['$totalWeight', 0] }, 
+              0, 
+              { $divide: ['$totalWeightedIri', '$totalWeight'] }
+            ] 
+          },
+          sampleCount: '$uniqueUsers'
+        }
+      }
+    ]);
+
+    if (!result) {
+      return;
+    }
+
+    const { averageIri, sampleCount } = result;
+    const iriCategory = deriveCategory(averageIri);
+
+    // ── 2. Persist to the segment document & Reset pending queue ───────────
+    const updatedSegment = await RoadSegment.findByIdAndUpdate(
+      objectId,
+      {
+        $set: {
+          iriStats: {
+            sampleCount,
+            rollingSum: 0, 
+            average:     averageIri,
+            pendingDevices: [], // Clear queue array for next milestone counting loop
+            lastUpdated: new Date(),
+          },
+          iriCategory,
+          lastObservationAt: new Date(),
+        },
+      },
+      { new: true, lean: true }
+    );
+
+    if (!updatedSegment) {
+      console.warn(`[aggregation] Segment ${key} not found during update`);
+      return;
+    }
+
+    // ── 3. Broadcast polyline update via Socket.IO ─────────────────────
+    const io = getIO();
+    io.emit('segment-polyline-update', {
+      roadSegmentId: key,
+      iriCategory,
+      averageIri:   Math.round(averageIri * 1000) / 1000, 
+      sampleCount,  // Unique Users count
+      polyline:     updatedSegment.polyline,
+      name:         updatedSegment.name,
+      updatedAt:    updatedSegment.lastObservationAt,
+    });
+  } catch (err) {
+    console.error(`[aggregation] updateSegment(${key}) error:`, err.message);
+    throw err; 
+  } finally {
+    _inFlight.delete(key);
+  }
+}
+
+// ── Bulk recalculation (maintenance / startup use) ─────────────────────────
+
+async function recalculateAllSegments() {
+  let processed = 0;
+  let errors    = 0;
+
+  const segmentIds = await Observation.distinct('roadSegmentId');
+  console.info(`[aggregation] Recalculating ${segmentIds.length} segments with exponential decay…`);
+
+  for (const id of segmentIds) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await updateSegment(id);
+      processed += 1;
+    } catch (err) {
+      errors += 1;
+      console.error(`[aggregation] Failed for segment ${id}:`, err.message);
+    }
+  }
+
+  console.info(`[aggregation] Done. processed=${processed} errors=${errors}`);
+  return { processed, errors };
+}
+
+module.exports = {
+  updateSegment,
+  recalculateAllSegments,
+  deriveCategory, 
+};

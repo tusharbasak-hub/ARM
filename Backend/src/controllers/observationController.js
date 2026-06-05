@@ -1,369 +1,267 @@
-const Observation = require('../models/Observation');
-const RoadSegment = require('../models/RoadSegment');
-const User = require('../models/User');
-const mapMatchingService = require('../services/mapMatching');
-const aggregationService = require('../services/aggregation');
-const { getRegionId } = require('../utils/geohash');
+// ==========================================
+// FILE: Backend/src/controllers/observationController.js
+// ==========================================
+
+'use strict';
+
+const Observation  = require('../models/Observation');
+const RoadSegment  = require('../models/RoadSegment');
+const aggregation  = require('../services/aggregation');
+const { getIO }    = require('../socket');
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const POTHOLE_CONFIDENCE_THRESHOLD = 0.75;
+const CONSENSUS_MIN_USERS = 1;       // Testing/Single-User Mode (Production: 3)
+const MILESTONE_THRESHOLD = 1;       // Testing/Single-User Mode (Production: 30)
+const CONSENSUS_RADIUS_METERS = 10;
+const CONSENSUS_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// ── Internal Helpers ───────────────────────────────────────────────────────
+
+function passesConfidenceGate(hasPothole, potholeConfidence) {
+  if (!hasPothole) return true;
+  return potholeConfidence > POTHOLE_CONFIDENCE_THRESHOLD;
+}
+
+async function resolveSegment(lat, lng, roadSegmentId) {
+  if (roadSegmentId) {
+    const seg = await RoadSegment.findById(roadSegmentId).lean();
+    if (seg) return seg;
+  }
+
+  const nearest = await RoadSegment.findOne({
+    geometry: {
+      $near: {
+        $geometry: { type: 'Point', coordinates: [lng, lat] },
+        $maxDistance: 500,
+      },
+    },
+  }).lean();
+
+  return nearest || null;
+}
+
+async function saveObservation(reading, segment) {
+  const { latitude, longitude, iriScore, hasPothole = false, potholeConfidence = 0, deviceId, sessionId, recordedAt } = reading;
+
+  const obs = new Observation({
+    roadSegmentId: segment._id,
+    deviceId,
+    sessionId,
+    latitude,
+    longitude,
+    location: { type: 'Point', coordinates: [longitude, latitude] },
+    iriScore,
+    hasPothole,
+    potholeConfidence,
+    recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
+  });
+
+  await obs.save();
+  return obs;
+}
+
+function emitMapPointEvent(observation) {
+  if (observation.markerType !== 'pothole') return; 
+
+  const io = getIO();
+  io.emit('map-point-event', {
+    type:     observation.markerType,
+    location: { lat: observation.latitude, lng: observation.longitude },
+    iriScore: observation.iriScore,
+    hasPothole: observation.hasPothole,
+    potholeConfidence: observation.potholeConfidence,
+    timestamp: observation.recordedAt,
+  });
+}
+
+async function verifyAndEmitPothole(observation) {
+  if (observation.markerType !== 'pothole') return;
+
+  const timeWindow = new Date(Date.now() - CONSENSUS_TIME_WINDOW_MS);
+  
+  const recentPotholes = await Observation.find({
+    markerType: 'pothole',
+    recordedAt: { $gte: timeWindow },
+    location: {
+      $near: {
+        $geometry: { type: 'Point', coordinates: [observation.longitude, observation.latitude] },
+        $maxDistance: CONSENSUS_RADIUS_METERS,
+      },
+    },
+  }).select('deviceId').lean();
+
+  const uniqueUsers = new Set();
+  recentPotholes.forEach(p => { if (p.deviceId) uniqueUsers.add(p.deviceId); });
+  if (observation.deviceId) uniqueUsers.add(observation.deviceId);
+
+  if (uniqueUsers.size >= CONSENSUS_MIN_USERS) {
+    console.log(`[Consensus] Pothole Verified! Votes: ${uniqueUsers.size}/${CONSENSUS_MIN_USERS}. Emitting Pin.`);
+    emitMapPointEvent(observation);
+  }
+}
+
+// ── Router Endpoint Handlers ───────────────────────────────────────────────
 
 /**
- * Submit road quality observation
+ * Maps to: POST /api/observations
  */
-exports.submitObservation = async (req, res, next) => {
-    try {
+async function submitObservation(req, res) {
+  try {
+    const { latitude, longitude, iriScore, hasPothole = false, potholeConfidence = 0, roadSegmentId, deviceId, sessionId, recordedAt } = req.body;
 
-        console.log(" Observation API HIT");
-        console.log(" req.body:", req.body);
-        console.log(" req.userId:", req.userId);
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({ error: 'latitude and longitude are required' });
+    }
+    if (iriScore === undefined || typeof iriScore !== 'number' || iriScore < 0) {
+      return res.status(400).json({ error: 'iriScore must be a non-negative number' });
+    }
 
-        const { latitude, longitude, roadQuality, speed, timestamp, deviceMetadata } = req.validatedData;
+    if (!passesConfidenceGate(hasPothole, potholeConfidence)) {
+      return res.status(202).json({ accepted: false, reason: 'potholeConfidence below threshold.' });
+    }
 
-        console.log(" validatedData:", req.validatedData);
+    const segment = await resolveSegment(latitude, longitude, roadSegmentId);
+    if (!segment) {
+      return res.status(404).json({ error: 'No road segment found near coordinates' });
+    }
 
-        const userId = req.userId;
+    const reading = { latitude, longitude, iriScore, hasPothole, potholeConfidence, deviceId, sessionId, recordedAt };
+    const obs     = await saveObservation(reading, segment);
 
-        // Get region ID from coordinates
-        const regionId = getRegionId(latitude, longitude);
+    await verifyAndEmitPothole(obs);
 
-        // Perform map matching
-        const matchResult = await mapMatchingService.matchPoint(latitude, longitude);
-        console.log(" Map Matching Result:", matchResult);
+    const updatedSegment = await RoadSegment.findByIdAndUpdate(
+      segment._id,
+      { $addToSet: { 'iriStats.pendingDevices': deviceId } },
+      { new: true }
+    );
 
-        if (!matchResult) {
-            return res.status(400).json({
-                success: false,
-                message: 'Unable to match location to road network'
-            });
-        }
+    const pendingCount = updatedSegment.iriStats?.pendingDevices?.length || 0;
 
-        // Create observation
-        const observation = await Observation.create({
-            userId,
-            location: {
-                type: "Point",
-                coordinates: [longitude, latitude]
-            },
-            roadQuality,
-            speed, // Store speed for aggregation speed-based weighting
-            timestamp: new Date(timestamp),
-            roadSegmentId: matchResult.roadSegmentId,
-            regionId,
-            matchingConfidence: matchResult.confidence // FIX A: Store confidence for aggregation filtering
-        });
+    if (pendingCount >= MILESTONE_THRESHOLD) {
+      aggregation.updateSegment(segment._id).catch((err) => {
+        console.error('[aggregation] updateSegment failed:', err.message);
+      });
+    }
 
+    return res.status(201).json({
+      success: true,
+      observationId: obs._id,
+      markerType: obs.markerType,
+      roadSegmentId: segment._id,
+    });
+  } catch (err) {
+    console.error('[Controller Error] submitObservation:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
 
-        // Update or create road segment
-        let roadSegment = await RoadSegment.findOneAndUpdate(
-            { roadSegmentId: matchResult.roadSegmentId },
-            {
-                $setOnInsert: {
-                    roadSegmentId: matchResult.roadSegmentId,
-                    geometry: {
-                        type: "LineString",
-                        coordinates: [
-                            [matchResult.matchedLongitude, matchResult.matchedLatitude],
-                            [longitude, latitude]
-                        ]
-                    },
-                    centerPoint: {
-                        type: "Point",
-                        coordinates: [longitude, latitude]
-                    },
-                    regionId,
-                    roadName: matchResult.roadName
-                },
-                $inc: { observationCount: 1 },
-                $set: { lastUpdated: new Date() }
-            },
-            { upsert: true, new: true }
+/**
+ * Maps to: POST /api/observations/patch
+ * Handles batch array telemetry profiles smoothly.
+ */
+async function submitPatch(req, res) {
+  try {
+    const { observations: readings } = req.body;
+    // Fallback if client sends raw array inside body instead of wrapper object
+    const batchList = Array.isArray(readings) ? readings : (Array.isArray(req.body) ? req.body : null);
+
+    if (!batchList || batchList.length === 0) {
+      return res.status(400).json({ error: 'Observations patch payload must be a non-empty array' });
+    }
+
+    const saved = [];
+    const skipped = [];
+    const segmentDevicesMap = {};
+
+    for (const reading of batchList) {
+      if (!passesConfidenceGate(reading.hasPothole, reading.potholeConfidence)) {
+        skipped.push({ latitude: reading.latitude, longitude: reading.longitude, reason: 'low confidence' });
+        continue;
+      }
+
+      const segment = await resolveSegment(reading.latitude, reading.longitude, reading.roadSegmentId);
+      if (!segment) {
+        skipped.push({ latitude: reading.latitude, longitude: reading.longitude, reason: 'no segment found' });
+        continue;
+      }
+
+      const obs = await saveObservation(reading, segment);
+      saved.push(obs._id);
+      
+      const segKey = String(segment._id);
+      if (!segmentDevicesMap[segKey]) segmentDevicesMap[segKey] = new Set();
+      if (reading.deviceId) segmentDevicesMap[segKey].add(reading.deviceId);
+
+      await verifyAndEmitPothole(obs);
+    }
+
+    for (const segId of Object.keys(segmentDevicesMap)) {
+      const uniqueDevicesArr = Array.from(segmentDevicesMap[segId]);
+      if (uniqueDevicesArr.length > 0) {
+        const updatedSegment = await RoadSegment.findByIdAndUpdate(
+          segId,
+          { $addToSet: { 'iriStats.pendingDevices': { $each: uniqueDevicesArr } } },
+          { new: true }
         );
 
-        console.log(" RoadSegment saved:", roadSegment.roadSegmentId);
-        // Trigger aggregation (async, don't wait)
-        setImmediate(async () => {
-            try {
-                console.log(" Aggregation started for:", matchResult.roadSegmentId);
-                const oldScore = roadSegment.aggregatedQualityScore;
-                const aggregationResult = await aggregationService.aggregateRoadSegment(matchResult.roadSegmentId);
-                console.log(" Aggregation Result:", aggregationResult);
-
-                const io = req.app.get('io');
-                if (io) {
-                    // Broadcast individual observation alert (exact location for map markers)
-                    // Only broadcast bad quality (2,3) to avoid noise
-                    if (roadQuality >= 2) {
-                        io.to(regionId).emit('observation-alert', {
-                            observationId: observation._id,
-                            location: { lat: latitude, lng: longitude },
-                            roadQuality,
-                            severity: roadQuality, // 2=bad, 3=worst
-                            timestamp: observation.timestamp,
-                            regionId
-                        });
-                    }
-
-                    // Broadcast aggregated segment update if significant change
-                    if (aggregationResult && aggregationService.shouldBroadcastUpdate(oldScore, aggregationResult.aggregatedQualityScore, aggregationResult.confidenceScore)) {
-                        io.to(regionId).emit('road-quality-update', {
-                            roadSegmentId: matchResult.roadSegmentId,
-                            aggregatedQualityScore: aggregationResult.aggregatedQualityScore,
-                            confidenceScore: aggregationResult.confidenceScore,
-                            regionId,
-                            lastUpdated: new Date()
-                        });
-                    }
-                }
-            } catch (err) {
-                console.error('Aggregation error:', err);
-            }
-        });
-
-        // Update user statistics
-        await User.findByIdAndUpdate(userId, {
-            $inc: { totalObservations: 1 },
-            lastActive: new Date()
-        });
-
-        res.status(201).json({
-            success: true,
-            message: 'Observation submitted successfully',
-            data: {
-                observationId: observation._id,
-                roadSegmentId: matchResult.roadSegmentId,
-                matchingConfidence: matchResult.confidence,
-                regionId
-            }
-        });
-    } catch (error) {
-        next(error);
+        const pendingCount = updatedSegment.iriStats?.pendingDevices?.length || 0;
+        if (pendingCount >= MILESTONE_THRESHOLD) {
+          aggregation.updateSegment(segId).catch((err) => {
+            console.error('[aggregation] Batch updateSegment failed:', err.message);
+          });
+        }
+      }
     }
-};
+
+    return res.status(201).json({ success: true, savedCount: saved.length, skippedCount: skipped.length, savedIds: saved });
+  } catch (err) {
+    console.error('[Controller Error] submitPatch batch:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
 
 /**
- * Get user's observation history
+ * Maps to: GET /api/observations/history
  */
-exports.getObservationHistory = async (req, res, next) => {
-    try {
-        const userId = req.userId;
-        const { limit = 50, offset = 0 } = req.query;
+async function getObservationHistory(req, res) {
+  try {
+    const userId = req.user?.uid || req.query.deviceId; 
+    if (!userId) return res.status(400).json({ error: 'Device or User identifier missing' });
 
-        const observations = await Observation.find({ userId })
-            .sort({ timestamp: -1 })
-            .limit(parseInt(limit))
-            .skip(parseInt(offset))
-            .select('-__v');
+    const history = await Observation.find({ deviceId: userId })
+      .sort({ recordedAt: -1 })
+      .limit(100)
+      .lean();
 
-        const total = await Observation.countDocuments({ userId });
-
-        res.json({
-            success: true,
-            data: {
-                observations,
-                pagination: {
-                    total,
-                    limit: parseInt(limit),
-                    offset: parseInt(offset)
-                }
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    return res.status(200).json({ success: true, count: history.length, data: history });
+  } catch (err) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
 
 /**
- * Get recent bad road observations for map markers
- * Allows browsing users to see pothole locations even when not driving
+ * Maps to: GET /api/observations/recent
+ * Returns real-time validated alerts directly for UI components
  */
-exports.getRecentAlerts = async (req, res, next) => {
-    try {
-        const { regionIds, minSeverity = 2, hoursBack = 72 } = req.validatedQuery;
+async function getRecentAlerts(req, res) {
+  try {
+    const alerts = await Observation.find({ markerType: 'pothole' })
+      .sort({ recordedAt: -1 })
+      .limit(100)
+      .lean();
 
-        const cutoffTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+    return res.status(200).json({ success: true, count: alerts.length, data: alerts });
+  } catch (err) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
 
-        // Query recent bad observations (roadQuality >= minSeverity)
-        const observations = await Observation.find({
-            regionId: { $in: regionIds },
-            roadQuality: { $gte: minSeverity },
-            timestamp: { $gte: cutoffTime }
-        })
-            .select('location roadQuality timestamp regionId')
-            .sort({ timestamp: -1 })
-            .limit(500) // Cap to avoid huge payloads
-            .lean();
-
-        // Transform to client-friendly format
-        const alerts = observations.map(obs => ({
-            id: obs._id,
-            location: {
-                lat: obs.location.coordinates[1],
-                lng: obs.location.coordinates[0]
-            },
-            severity: obs.roadQuality,
-            timestamp: obs.timestamp,
-            regionId: obs.regionId
-        }));
-
-        res.json({
-            success: true,
-            data: {
-                alerts,
-                count: alerts.length,
-                queryParams: { regionIds, minSeverity, hoursBack }
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * Submit road quality patch observation
- * Handles continuous bad road stretches without flooding the server
- */
-exports.submitPatch = async (req, res, next) => {
-    try {
-        const {
-            startLatitude,
-            startLongitude,
-            endLatitude,
-            endLongitude,
-            severity,
-            patchLengthM,
-            startTimestamp,
-            endTimestamp,
-            deviceMetadata
-        } = req.validatedData;
-
-        const userId = req.userId;
-
-        // Calculate duration in seconds
-        const durationSeconds = (new Date(endTimestamp) - new Date(startTimestamp)) / 1000;
-
-        // RULE: Ignore patches that are both short (<5m) AND brief (<2s) - likely noise
-        if (patchLengthM < 5 && durationSeconds < 2) {
-            return res.status(400).json({
-                success: false,
-                message: 'Patch too short and brief - likely noise (minimum 5m or 2s required)'
-            });
-        }
-
-        // Get region ID from START coordinates
-        const regionId = getRegionId(startLatitude, startLongitude);
-
-        // Perform map matching on START point only (fast, MVP approach)
-        const matchResult = await mapMatchingService.matchPoint(startLatitude, startLongitude);
-
-        if (!matchResult) {
-            return res.status(400).json({
-                success: false,
-                message: 'Unable to match location to road network'
-            });
-        }
-
-        // Determine if patch should affect segment scoring
-        // Render on map if >= 5m OR >= 2s, but only affect scoring if >= 5m AND >= 2s
-        const affectsScore = patchLengthM >= 5 && durationSeconds >= 2;
-
-        // Update or create road segment with patch length counters
-        const updateOps = {
-            $setOnInsert: {
-                roadSegmentId: matchResult.roadSegmentId,
-                geometry: {
-                    type: "LineString",
-                    coordinates: [
-                        [startLongitude, startLatitude],
-                        [endLongitude, endLatitude]
-                    ]
-                },
-                centerPoint: {
-                    type: "Point",
-                    coordinates: [startLongitude, startLatitude]
-                },
-                regionId,
-                roadName: matchResult.roadName
-            },
-            $set: { lastUpdated: new Date() }
-        };
-
-        // Only increment length counters if patch affects score
-        if (affectsScore) {
-            // FIX C: Safe severity handling (validated but defensive)
-            if (severity === 1) {
-                updateOps.$inc = { len1: patchLengthM, observationCount: 1 };
-            } else if (severity === 2) {
-                updateOps.$inc = { len2: patchLengthM, observationCount: 1 };
-            } else if (severity === 3) {
-                updateOps.$inc = { len3: patchLengthM, observationCount: 1 };
-            } else {
-                // Unexpected severity value - increment observationCount only
-                updateOps.$inc = { observationCount: 1 };
-            }
-        } else {
-            // Still increment observation count for tracking, but not length
-            updateOps.$inc = { observationCount: 1 };
-        }
-
-        const roadSegment = await RoadSegment.findOneAndUpdate(
-            { roadSegmentId: matchResult.roadSegmentId },
-            updateOps,
-            { upsert: true, new: true }
-        );
-
-        // Trigger aggregation (async, don't wait)
-        setImmediate(async () => {
-            try {
-                const oldScore = roadSegment.aggregatedQualityScore;
-                const aggregationResult = await aggregationService.aggregateRoadSegment(matchResult.roadSegmentId);
-
-                const io = req.app.get('io');
-                if (io) {
-                    // Broadcast patch alert (exact bad road stretch for map polyline)
-                    if (affectsScore && severity >= 2) {
-                        io.to(regionId).emit('patch-alert', {
-                            startLocation: { lat: startLatitude, lng: startLongitude },
-                            endLocation: { lat: endLatitude, lng: endLongitude },
-                            severity,
-                            patchLengthM,
-                            timestamp: new Date(startTimestamp),
-                            regionId
-                        });
-                    }
-
-                    // Broadcast aggregated segment update if significant change
-                    if (aggregationResult && aggregationService.shouldBroadcastUpdate(oldScore, aggregationResult.aggregatedQualityScore, aggregationResult.confidenceScore)) {
-                        io.to(regionId).emit('road-quality-update', {
-                            roadSegmentId: matchResult.roadSegmentId,
-                            aggregatedQualityScore: aggregationResult.aggregatedQualityScore,
-                            confidenceScore: aggregationResult.confidenceScore,
-                            regionId,
-                            lastUpdated: new Date()
-                        });
-                    }
-                }
-            } catch (err) {
-                console.error('Patch aggregation error:', err);
-            }
-        });
-
-        // Update user statistics
-        await User.findByIdAndUpdate(userId, {
-            $inc: { totalObservations: 1 },
-            lastActive: new Date()
-        });
-
-        res.status(201).json({
-            success: true,
-            message: 'Patch observation submitted successfully',
-            data: {
-                roadSegmentId: matchResult.roadSegmentId,
-                matchingConfidence: matchResult.confidence,
-                regionId,
-                patchLengthM,
-                severity,
-                affectsScore
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
+module.exports = {
+  submitObservation,
+  submitPatch,
+  getObservationHistory,
+  getRecentAlerts,
+  POTHOLE_CONFIDENCE_THRESHOLD,
 };

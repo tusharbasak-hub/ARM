@@ -26,3 +26,5 @@ build/
 # OS
 .DS_Store
 Thumbs.ds_Store
+node_modules/
+.env
