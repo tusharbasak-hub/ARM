@@ -1,191 +1,115 @@
-const socketIO = require('socket.io');
-const { authenticateSocket } = require('../middleware/socketAuth');
-const { getRegionId } = require('../utils/geohash');
-const sessionService = require('../services/sessionService');
+// ==========================================
+// FILE: Backend/src/socket/index.js
+// ==========================================
 
-function isValidCoordinate(lat, lng) {
-    return (
-        typeof lat === 'number' &&
-        typeof lng === 'number' &&
-        lat >= -90 && lat <= 90 &&
-        lng >= -180 && lng <= 180
-    );
-}
+'use strict';
 
-function initializeSocketServer(server) {
-    const io = socketIO(server, {
-        cors: {
-            origin: process.env.CORS_ORIGIN || '*',
-            methods: ['GET', 'POST'],
-            credentials: true
-        },
-        pingTimeout: Number(process.env.SOCKET_PING_TIMEOUT) || 60000,
-        pingInterval: Number(process.env.SOCKET_PING_INTERVAL) || 25000,
-        transports: ['websocket', 'polling']
+const { Server }     = require('socket.io');
+const RoadSegment    = require('../models/RoadSegment');
+const Observation    = require('../models/Observation');
+
+let _io = null;
+
+function init(server, opts = {}) {
+  if (_io) {
+    console.warn('[socket] init() called more than once — reusing existing instance');
+    return _io;
+  }
+
+  _io = new Server(server, {
+    cors: {
+      origin:  process.env.CORS_ORIGIN || '*',
+      methods: ['GET', 'POST'],
+    },
+    transports: ['websocket', 'polling'],
+    ...opts,
+  });
+
+  _io.on('connection', async (socket) => {
+    console.info(`[socket] Client connected: ${socket.id}`);
+
+    try {
+      await _sendInitialState(socket);
+    } catch (err) {
+      console.error('[socket] Failed to send initial state:', err.message);
+    }
+
+    socket.on('disconnect', (reason) => {
+      console.info(`[socket] Client disconnected: ${socket.id} (${reason})`);
     });
 
-    io.use(authenticateSocket);
+    socket.on('request-segment', async (data) => {
+      try {
+        const { segmentId } = data || {};
+        if (!segmentId) return;
 
-    io.on('connection', async (socket) => {
-        console.log(` Socket connected: ${socket.id} (User: ${socket.userId})`);
-
-        // Create session in Redis
-        await sessionService.createSession(socket.id, socket.userId, {
-            userAgent: socket.handshake.headers['user-agent']
-        });
-
-        socket.currentRegion = null;
-
-        /**
-         * Join region
-         */
-        socket.on('join-region', async ({ latitude, longitude }) => {
-            try {
-                if (!isValidCoordinate(latitude, longitude)) {
-                    return socket.emit('error', { message: 'Invalid coordinates' });
-                }
-
-                const regionId = getRegionId(latitude, longitude);
-
-                if (socket.currentRegion) {
-                    socket.leave(socket.currentRegion);
-                }
-
-                socket.join(regionId);
-                socket.currentRegion = regionId;
-
-                // Update Redis session with region
-                await sessionService.joinRegion(socket.id, regionId, {
-                    latitude,
-                    longitude
-                });
-
-                socket.emit('region-joined', { regionId });
-
-                socket.to(regionId).emit('user-joined-region', {
-                    userId: socket.userId,
-                    regionId
-                });
-
-            } catch (err) {
-                console.error('join-region error:', err);
-                socket.emit('error', { message: 'Join region failed' });
-            }
-        });
-
-        /**
-         * Update location
-         */
-        socket.on('update-location', async ({ latitude, longitude }) => {
-            try {
-                if (!isValidCoordinate(latitude, longitude)) return;
-
-                const newRegionId = getRegionId(latitude, longitude);
-                const oldRegion = socket.currentRegion;
-
-                if (oldRegion !== newRegionId) {
-                    if (oldRegion) {
-                        socket.leave(oldRegion);
-                        await sessionService.leaveRegion(socket.id, oldRegion);
-
-                        socket.to(oldRegion).emit('user-left-region', {
-                            userId: socket.userId,
-                            regionId: oldRegion
-                        });
-                    }
-
-                    socket.join(newRegionId);
-                    socket.currentRegion = newRegionId;
-
-                    await sessionService.joinRegion(socket.id, newRegionId, {
-                        latitude,
-                        longitude
-                    });
-
-                    socket.to(newRegionId).emit('user-joined-region', {
-                        userId: socket.userId,
-                        regionId: newRegionId
-                    });
-
-                    socket.emit('region-changed', {
-                        oldRegion,
-                        newRegion: newRegionId
-                    });
-                }
-
-                // Update location in session
-                await sessionService.updateSession(socket.id, {
-                    lastLocation: { latitude, longitude }
-                });
-
-            } catch (err) {
-                console.error('update-location error:', err);
-            }
-        });
-
-        /**
-         * Road Quality Update
-         */
-        socket.on('road-quality-update', async (data) => {
-            try {
-                // data: { quality, location, timestamp }
-                const { quality, location } = data;
-                
-                if (!isValidCoordinate(location.latitude, location.longitude)) return;
-
-                const regionId = getRegionId(location.latitude, location.longitude);
-
-                // Broadcast to everyone in the region (including sender? usually broadcast excludes sender)
-                // We perform a broadcast to the region so others see the marker
-                socket.to(regionId).emit('road-quality-update', {
-                    userId: socket.userId,
-                    quality,
-                    location,
-                    timestamp: Date.now()
-                });
-
-                // Optionally save to DB (not implementing fully as per plan focus on realtime map)
-                // await roadQualityService.saveReading(socket.userId, data);
-
-            } catch (err) {
-                console.error('road-quality-update error:', err);
-            }
-        });
-
-        /**
-         * Heartbeat
-         */
-        socket.on('ping', async () => {
-            socket.emit('pong');
-            await sessionService.recordHeartbeat(socket.id);
-        });
-
-        /**
-         * Disconnect
-         */
-        socket.on('disconnect', async () => {
-            console.log(` Socket disconnected: ${socket.id}`);
-
-            try {
-                if (socket.currentRegion) {
-                    await sessionService.leaveRegion(socket.id, socket.currentRegion);
-                    socket.to(socket.currentRegion).emit('user-left-region', {
-                        userId: socket.userId,
-                        regionId: socket.currentRegion
-                    });
-                }
-
-                // Delete session from Redis
-                await sessionService.deleteSession(socket.id);
-
-            } catch (err) {
-                console.error('disconnect cleanup error:', err);
-            }
-        });
+        const seg = await RoadSegment.findById(segmentId).lean();
+        if (seg) {
+          socket.emit('segment-polyline-update', {
+            roadSegmentId: String(seg._id),
+            iriCategory:   seg.iriCategory,
+            averageIri:    seg.iriStats?.average ?? 0,
+            sampleCount:   seg.iriStats?.sampleCount ?? 0,
+            polyline:      seg.geometry, // Aligned to geometry structure
+            name:          seg.name,
+            updatedAt:     seg.lastObservationAt,
+          });
+        }
+      } catch (err) {
+        console.error('[socket] request-segment error:', err.message);
+      }
     });
+  });
 
-    console.log(' Socket.IO server initialized');
-    return io;
+  console.info('[socket] Socket.IO initialised');
+  return _io;
 }
 
-module.exports = initializeSocketServer;
+function getIO() {
+  if (!_io) {
+    throw new Error('[socket] getIO() called before init(). Call init(server) first.');
+  }
+  return _io;
+}
+
+async function _sendInitialState(socket) {
+  // Directly selects standardized geometry structure
+  const segments = await RoadSegment.find({})
+    .select('_id name geometry iriCategory iriStats lastObservationAt')
+    .lean();
+
+  socket.emit('initial-segments', {
+    segments: segments.map((seg) => ({
+      roadSegmentId: String(seg._id),
+      name:          seg.name,
+      iriCategory:   seg.iriCategory,
+      averageIri:    seg.iriStats?.average ?? 0,
+      sampleCount:   seg.iriStats?.sampleCount ?? 0,
+      polyline:      seg.geometry, 
+      updatedAt:     seg.lastObservationAt,
+    })),
+  });
+
+  // Redundant perfect markers tracking removed entirely for resource footprint tuning
+  const recentPoints = await Observation.find({ markerType: 'pothole' })
+    .sort({ recordedAt: -1 })
+    .limit(500)
+    .select('latitude longitude iriScore hasPothole potholeConfidence markerType recordedAt')
+    .lean();
+
+  socket.emit('initial-map-points', {
+    points: recentPoints.map((obs) => ({
+      type:              obs.markerType,
+      location:          { lat: obs.latitude, lng: obs.longitude },
+      iriScore:          obs.iriScore,
+      hasPothole:        obs.hasPothole,
+      potholeConfidence: obs.potholeConfidence,
+      timestamp:         obs.recordedAt,
+    })),
+  });
+}
+
+module.exports = {
+  init,
+  getIO,
+};
