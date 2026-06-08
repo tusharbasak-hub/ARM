@@ -129,7 +129,9 @@ async function submitObservation(req, res) {
     const reading = { latitude, longitude, iriScore, hasPothole, potholeConfidence, deviceId, sessionId, recordedAt };
     const obs     = await saveObservation(reading, segment);
 
-    await verifyAndEmitPothole(obs);
+    verifyAndEmitPothole(obs).catch((err) => {
+      console.error('[Background Consensus Error]:', err.message);
+    });
 
     const updatedSegment = await RoadSegment.findByIdAndUpdate(
       segment._id,
@@ -194,7 +196,9 @@ async function submitPatch(req, res) {
       if (!segmentDevicesMap[segKey]) segmentDevicesMap[segKey] = new Set();
       if (reading.deviceId) segmentDevicesMap[segKey].add(reading.deviceId);
 
-      await verifyAndEmitPothole(obs);
+      verifyAndEmitPothole(obs).catch((err) => {
+        console.error('[Batch Background Consensus Error]:', err.message);
+      });
     }
 
     for (const segId of Object.keys(segmentDevicesMap)) {
