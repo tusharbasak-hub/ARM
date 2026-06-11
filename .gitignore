@@ -32,3 +32,5 @@ Thumbs.ds_Store
 ml_model_work
 desktop.ini
 final stuff
+node_modules/
+.env

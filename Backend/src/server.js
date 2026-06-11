@@ -1,3 +1,7 @@
+// ==========================================
+// FILE: Backend/src/app.js (or server.js)
+// ==========================================
+
 require('dotenv').config();
 
 const express = require('express');
@@ -10,7 +14,7 @@ const rateLimit = require('express-rate-limit');
 
 const connectDB = require('./config/database');
 const { initializeRedis, closeRedis, getRedisClient } = require('./config/redis');
-const initializeSocketServer = require('./socket');
+const socketModule = require('./socket'); // Clean extraction strategy applied
 const routes = require('./routes');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 
@@ -20,11 +24,11 @@ const server = http.createServer(app);
 // Initialize DB and Redis
 connectDB();
 initializeRedis().catch(err => {
-    console.warn(' Redis initialization failed, continuing without Redis:', err.message);
+    console.warn('Redis initialization failed, continuing without Redis:', err.message);
 });
 
-// Socket.IO
-const io = initializeSocketServer(server);
+// Socket.IO Server initialization fix
+const io = socketModule.init(server);
 app.set('io', io);
 
 // Security
@@ -48,7 +52,7 @@ app.use('/api', rateLimit({
 // Routes
 app.use('/api', routes);
 
-// Health
+// Health Check Endpoints
 app.get('/', (req, res) => {
     res.json({ status: 'API running ' });
 });
@@ -77,35 +81,30 @@ app.get('/health', async (req, res) => {
     });
 });
 
-// Errors
 app.use(notFound);
 app.use(errorHandler);
 
-// Start
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-// Graceful shutdown
 const shutdown = async () => {
     console.log('\n Shutting down gracefully...');
-
     try {
         await closeRedis();
         server.close(() => {
-            console.log(' Server closed');
+            console.log('Server closed');
             process.exit(0);
         });
 
-        // Force shutdown after 10s
         setTimeout(() => {
-            console.error(' Forced shutdown');
+            console.error('Forced shutdown');
             process.exit(1);
         }, 10000);
     } catch (error) {
-        console.error(' Shutdown error:', error);
+        console.error('Shutdown error:', error);
         process.exit(1);
     }
 };
