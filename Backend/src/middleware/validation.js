@@ -8,13 +8,13 @@ const schemas = {
         email: Joi.string().email().required(),
         password: Joi.string().min(6).required(),
         name: Joi.string().min(2).max(50).required(),
-        deviceId: Joi.string().required()
+        deviceId: Joi.string().optional()
     }),
 
     login: Joi.object({
         email: Joi.string().email().required(),
         password: Joi.string().required(),
-        deviceId: Joi.string().required()
+        deviceId: Joi.string().optional()
     }),
 
     anonymous: Joi.object({
@@ -22,15 +22,16 @@ const schemas = {
     }),
 
     observation: Joi.object({
-        latitude: Joi.number().min(-90).max(90).required(),
-        longitude: Joi.number().min(-180).max(180).required(),
-        roadQuality: Joi.number().integer().min(0).max(3).required(),
-        speed: Joi.number().min(0).required(),
-        timestamp: Joi.date().iso().required(),
-        deviceMetadata: Joi.object({
-            platform: Joi.string(),
-            appVersion: Joi.string()
-        }).optional()
+        latitude:          Joi.number().min(-90).max(90).required(),
+        longitude:         Joi.number().min(-180).max(180).required(),
+        iriScore:          Joi.number().min(0).required(),
+        hasPothole:        Joi.boolean().default(false),
+        potholeConfidence: Joi.number().min(0).max(1).default(0),
+        roadSegmentId:     Joi.string().optional(),
+        deviceId:          Joi.string().optional(),
+        sessionId:         Joi.string().optional(),
+        recordedAt:        Joi.date().iso().optional(),
+        speed:             Joi.number().min(0).optional(),
     }),
 
     nearbyQuery: Joi.object({
@@ -48,24 +49,22 @@ const schemas = {
     }),
 
     patch: Joi.object({
-        startLatitude: Joi.number().min(-90).max(90).required(),
-        startLongitude: Joi.number().min(-180).max(180).required(),
-        endLatitude: Joi.number().min(-90).max(90).required(),
-        endLongitude: Joi.number().min(-180).max(180).required(),
-        severity: Joi.number().integer().min(1).max(3).required(),
-        patchLengthM: Joi.number().min(0).required(),
-        startTimestamp: Joi.date().iso().required(),
-        endTimestamp: Joi.date().iso().min(Joi.ref('startTimestamp')).required(), // FIX E: Ensure endTimestamp >= startTimestamp
-        deviceMetadata: Joi.object({
-            platform: Joi.string(),
-            appVersion: Joi.string()
-        }).optional()
+        observations: Joi.array().items(Joi.object({
+            latitude:          Joi.number().min(-90).max(90).required(),
+            longitude:         Joi.number().min(-180).max(180).required(),
+            iriScore:          Joi.number().min(0).required(),
+            hasPothole:        Joi.boolean().default(false),
+            potholeConfidence: Joi.number().min(0).max(1).default(0),
+            roadSegmentId:     Joi.string().optional(),
+            deviceId:          Joi.string().optional(),
+            sessionId:         Joi.string().optional(),
+            recordedAt:        Joi.date().iso().optional(),
+        })).min(1).required(),
     }),
 
     recentAlerts: Joi.object({
-        regionIds: Joi.array().items(Joi.string()).min(1).max(20).required(), // Up to 20 regions (user viewport + neighbors)
-        minSeverity: Joi.number().integer().min(1).max(3).default(2), // Default: show bad(2) and worst(3)
-        hoursBack: Joi.number().integer().min(1).max(168).default(72) // Default: 3 days, max 7 days
+        limit:    Joi.number().integer().min(1).max(500).default(100),
+        hoursBack: Joi.number().integer().min(1).max(168).default(72),
     }),
 
     mapSegments: Joi.object({

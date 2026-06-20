@@ -30,6 +30,6 @@ router.get('/history', authenticateFirebase, observationController.getObservatio
  * @desc    Get recent bad road observations for map markers (browsing mode)
  * @access  Public (no auth required for viewing alerts)
  */
-router.get('/recent', require('../middleware/validation').validateQuery('recentAlerts'), observationController.getRecentAlerts);
+router.get('/recent', observationController.getRecentAlerts);
 
 module.exports = router;

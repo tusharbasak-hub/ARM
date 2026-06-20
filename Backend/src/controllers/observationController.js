@@ -8,6 +8,8 @@ const Observation  = require('../models/Observation');
 const RoadSegment  = require('../models/RoadSegment');
 const aggregation  = require('../services/aggregation');
 const { getIO }    = require('../socket');
+const mapMatching  = require('../services/mapMatching');
+const { getRegionId } = require('../utils/geohash');
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const POTHOLE_CONFIDENCE_THRESHOLD = 0.75;
@@ -38,7 +40,57 @@ async function resolveSegment(lat, lng, roadSegmentId) {
     },
   }).lean();
 
-  return nearest || null;
+  if (nearest) return nearest;
+
+  // Dynamically match and create a new RoadSegment if none exists within 500m
+  try {
+    const matched = await mapMatching.matchPoint(lat, lng);
+    if (!matched) return null;
+
+    let seg = await RoadSegment.findOne({ roadSegmentId: matched.roadSegmentId }).lean();
+    if (!seg) {
+      const regionId = getRegionId(matched.matchedLatitude, matched.matchedLongitude);
+      const newSeg = new RoadSegment({
+        name: matched.roadName || 'Unknown Road',
+        roadSegmentId: matched.roadSegmentId,
+        regionId,
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [matched.matchedLongitude - 0.0004, matched.matchedLatitude],
+            [matched.matchedLongitude + 0.0004, matched.matchedLatitude]
+          ]
+        },
+        centerPoint: [matched.matchedLongitude, matched.matchedLatitude],
+        aggregatedQualityScore: 1.0,
+        observationCount: 0,
+        iriStats: {
+          pendingDevices: [],
+          sampleCount: 0,
+          average: 1.0,
+          lastUpdated: new Date(),
+        }
+      });
+      const savedDoc = await newSeg.save();
+      seg = savedDoc.toObject();
+
+      // Broadcast the newly created segment via Socket.IO
+      const io = getIO();
+      io.emit('segment-polyline-update', {
+        roadSegmentId: String(seg._id),
+        iriCategory:   seg.iriCategory,
+        averageIri:    seg.iriStats?.average ?? 0,
+        sampleCount:   seg.iriStats?.sampleCount ?? 0,
+        polyline:      seg.geometry,
+        name:          seg.name,
+        updatedAt:     seg.updatedAt,
+      });
+    }
+    return seg;
+  } catch (err) {
+    console.error('[resolveSegment] Error dynamically creating road segment:', err.message);
+    return null;
+  }
 }
 
 async function saveObservation(reading, segment) {
@@ -231,10 +283,10 @@ async function submitPatch(req, res) {
  */
 async function getObservationHistory(req, res) {
   try {
-    const userId = req.user?.uid || req.query.deviceId; 
-    if (!userId) return res.status(400).json({ error: 'Device or User identifier missing' });
+    const deviceId = req.user?.deviceId || req.query.deviceId; 
+    if (!deviceId) return res.status(400).json({ error: 'Device identifier missing' });
 
-    const history = await Observation.find({ deviceId: userId })
+    const history = await Observation.find({ deviceId })
       .sort({ recordedAt: -1 })
       .limit(100)
       .lean();

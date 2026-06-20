@@ -1,69 +1,98 @@
 import { io, Socket } from 'socket.io-client';
-import { Platform } from 'react-native';
+
+export interface RoadSegmentUpdate {
+  roadSegmentId: string;
+  iriCategory:   'green' | 'yellow' | 'orange';
+  averageIri:    number;
+  sampleCount:   number;
+  polyline:      { type: string; coordinates: number[][] };
+  name?:         string;
+  updatedAt?:    string;
+}
+
+export interface MapPoint {
+  type:              string;
+  location:          { lat: number; lng: number };
+  iriScore:          number;
+  hasPothole:        boolean;
+  potholeConfidence: number;
+  timestamp:         string;
+}
+
+type Listener<T> = (data: T) => void;
 
 class SocketService {
-    private socket: Socket | null = null;
-    private isConnected: boolean = false;
-    private listeners: Record<string, Function[]> = {};
+  private socket: Socket | null = null;
+  private _connected = false;
 
-    connect(url: string, auth: { token?: string } = {}) {
-        if (this.socket) {
-            this.socket.disconnect();
-        }
+  // typed listener maps
+  private segmentListeners:     Listener<RoadSegmentUpdate>[]  = [];
+  private initialSegListeners:  Listener<RoadSegmentUpdate[]>[] = [];
+  private mapPointListeners:    Listener<MapPoint>[]            = [];
+  private connectListeners:     Listener<void>[]                = [];
+  private disconnectListeners:  Listener<void>[]                = [];
 
-        console.log('Connecting to socket:', url, 'with auth:', auth ? 'YES' : 'NO');
+  get connected() { return this._connected; }
 
-        this.socket = io(url, {
-            transports: ['websocket'],
-            auth: auth,
-            query: {
-                platform: Platform.OS
-            }
-        });
+  connect(url: string, token?: string) {
+    if (this.socket) this.socket.disconnect();
 
-        this.socket.on('connect', () => {
-            console.log('Socket connected:', this.socket?.id);
-            this.isConnected = true;
-            this.notifyListeners('connect', null);
-        });
+    this.socket = io(url, {
+      transports:       ['websocket', 'polling'],
+      auth:             token ? { token } : {},
+      reconnection:     true,
+      reconnectionDelay: 2000,
+      timeout:          10000,
+    });
 
-        this.socket.on('disconnect', () => {
-            console.log('Socket disconnected');
-            this.isConnected = false;
-            this.notifyListeners('disconnect', null);
-        });
+    this.socket.on('connect', () => {
+      this._connected = true;
+      console.log('[socket] connected:', this.socket?.id);
+      this.connectListeners.forEach(fn => fn());
+    });
 
-        this.socket.on('road-quality-update', (data: any) => {
-            this.notifyListeners('road-quality-update', data);
-        });
-    }
+    this.socket.on('disconnect', () => {
+      this._connected = false;
+      console.log('[socket] disconnected');
+      this.disconnectListeners.forEach(fn => fn());
+    });
 
-    sendRoadQualityUpdate(quality: number, location: { latitude: number; longitude: number }) {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('road-quality-update', {
-            quality,
-            location,
-            timestamp: Date.now()
-        });
-    }
+    // Bulk initial state — sent once on connection
+    this.socket.on('initial-segments', (data: { segments: RoadSegmentUpdate[] }) => {
+      this.initialSegListeners.forEach(fn => fn(data.segments));
+    });
 
-    on(event: string, callback: Function) {
-        if (!this.listeners[event]) {
-            this.listeners[event] = [];
-        }
-        this.listeners[event].push(callback);
-    }
+    // Live per-segment update after aggregation fires
+    this.socket.on('segment-polyline-update', (data: RoadSegmentUpdate) => {
+      this.segmentListeners.forEach(fn => fn(data));
+    });
 
-    off(event: string, callback: Function) {
-        if (!this.listeners[event]) return;
-        this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
-    }
+    // Verified pothole pin
+    this.socket.on('map-point-event', (data: MapPoint) => {
+      this.mapPointListeners.forEach(fn => fn(data));
+    });
+  }
 
-    private notifyListeners(event: string, data: any) {
-        if (this.listeners[event]) {
-            this.listeners[event].forEach(cb => cb(data));
-        }
-    }
+  disconnect() {
+    this.socket?.disconnect();
+    this.socket = null;
+    this._connected = false;
+  }
+
+  // ─── Listener registration ─────────────────────────────────────────────────
+  onConnect(fn: Listener<void>)                        { this.connectListeners.push(fn); }
+  onDisconnect(fn: Listener<void>)                     { this.disconnectListeners.push(fn); }
+  onInitialSegments(fn: Listener<RoadSegmentUpdate[]>) { this.initialSegListeners.push(fn); }
+  onSegmentUpdate(fn: Listener<RoadSegmentUpdate>)     { this.segmentListeners.push(fn); }
+  onMapPoint(fn: Listener<MapPoint>)                   { this.mapPointListeners.push(fn); }
+
+  removeAll() {
+    this.segmentListeners      = [];
+    this.initialSegListeners   = [];
+    this.mapPointListeners     = [];
+    this.connectListeners      = [];
+    this.disconnectListeners   = [];
+  }
 }
 
 export const socketService = new SocketService();

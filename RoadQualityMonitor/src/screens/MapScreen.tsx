@@ -1,212 +1,449 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Platform, PermissionsAndroid } from 'react-native';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  View, Text, TouchableOpacity, StyleSheet,
+  ActivityIndicator, Platform, PermissionsAndroid, StatusBar,
+} from 'react-native';
 import MapboxGL from '@rnmapbox/maps';
-import { ENV, ROAD_QUALITY_COLORS, ROAD_QUALITY_LABELS } from '../config/env';
-import { mlService } from '../services/mlService';
+import { ENV, COLORS, IRI_COLORS, IRI_LABELS, QUALITY_COLORS, QUALITY_LABELS, RoadQuality, IriCategory } from '../config/env';
+import { socketService, RoadSegmentUpdate, MapPoint } from '../services/socketService';
 import { sensorService } from '../services/sensorService';
 import { windowManager } from '../services/windowService';
-import { socketService } from '../services/socketService';
+import { mlService } from '../services/mlService';
+import { observationService } from '../services/observationService';
 import { authService } from '../services/authService';
 
-// Set your public token here or in env.ts
-MapboxGL.setAccessToken(ENV.MAPBOX_TOKEN || 'YOUR_MAPBOX_TOKEN'); 
+MapboxGL.setAccessToken(ENV.MAPBOX_TOKEN);
 
-interface MapMarkerState {
-    id: string;
-    coordinate: [number, number]; // Mapbox uses [lng, lat] array
-    quality: number;
-    timestamp: number;
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface SegmentMap { [id: string]: RoadSegmentUpdate }
+
+// ─── GeoJSON helpers ──────────────────────────────────────────────────────────
+function buildSegmentGeoJSON(segments: SegmentMap) {
+  const features = Object.values(segments)
+    .filter(s => s.polyline?.coordinates?.length >= 2)
+    .map(s => ({
+      type: 'Feature' as const,
+      id:   s.roadSegmentId,
+      properties: {
+        iriCategory: s.iriCategory,
+        color:       IRI_COLORS[s.iriCategory as IriCategory] ?? '#9E9E9E',
+        iriScore:    s.averageIri,
+        name:        s.name ?? '',
+      },
+      geometry: {
+        type:        'LineString' as const,
+        coordinates: s.polyline.coordinates,
+      },
+    }));
+
+  return { type: 'FeatureCollection' as const, features };
 }
 
-export const MapScreen = (props: any) => { // Accept props for navigation
-    const [markers, setMarkers] = useState<MapMarkerState[]>([]);
-    const [isMonitoring, setIsMonitoring] = useState(false);
-    const [currentQuality, setCurrentQuality] = useState<number | null>(null);
-    
-    // Services Initialization
-    useEffect(() => {
-        const initServices = async () => {
-             // 0. Get Token
-             const token = await authService.getToken();
+function buildPotholeGeoJSON(points: MapPoint[]) {
+  const features = points.map((p, i) => ({
+    type: 'Feature' as const,
+    id:   `pothole_${i}`,
+    properties: { iriScore: p.iriScore },
+    geometry: {
+      type:        'Point' as const,
+      coordinates: [p.location.lng, p.location.lat],
+    },
+  }));
+  return { type: 'FeatureCollection' as const, features };
+}
 
-             // 1. Initialize Socket
-             socketService.connect(ENV.API.BASE_URL, { token: token || undefined });
+// ─── Component ────────────────────────────────────────────────────────────────
+export const MapScreen = ({ navigation }: any) => {
+  const [segments,        setSegments]        = useState<SegmentMap>({});
+  const [potholes,        setPotholes]        = useState<MapPoint[]>([]);
+  const [monitoring,      setMonitoring]      = useState(false);
+  const [currentQuality,  setCurrentQuality]  = useState<RoadQuality | null>(null);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [mlReady,         setMlReady]         = useState(false);
+  const [loading,         setLoading]         = useState(true);
 
-             // 2. Initialize ML
-             await mlService.initialize();
+  const cameraRef = useRef<MapboxGL.Camera>(null);
 
-             // 3. Listen for socket updates
-             socketService.on('road-quality-update', (data: any) => {
-                 // data: { quality, location: { latitude, longitude } }
-                 // Mapbox wants [lng, lat]
-                 const newMarker: MapMarkerState = {
-                     id: `remote-${Date.now()}-${Math.random()}`,
-                     coordinate: [data.location.longitude, data.location.latitude],
-                     quality: data.quality,
-                     timestamp: Date.now()
-                 };
-                 setMarkers(prev => [...prev.slice(-99), newMarker]);
-             });
+  // ─── Permissions ────────────────────────────────────────────────────────────
+  const requestPerms = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+      ]);
+    }
+  }, []);
 
-             // 4. Setup Window Manager Callback (Link Sensor -> ML)
-             windowManager.initialize(async (windowData) => {
-                 const prediction = await mlService.predict(windowData);
-                 if (prediction !== null) {
-                     setCurrentQuality(prediction);
-                     
-                     // Get last location
-                     const lastSample = windowData[windowData.length -1];
-                     const location = lastSample.location;
+  // ─── Init ────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    let mounted = true;
 
-                     // Add simple valid check
-                     if (location.latitude !== 0 && location.longitude !== 0) {
-                         const newMarker: MapMarkerState = {
-                             id: `local-${Date.now()}`,
-                             coordinate: [location.longitude, location.latitude],
-                             quality: prediction,
-                             timestamp: Date.now()
-                         };
-                         setMarkers(prev => [...prev.slice(-99), newMarker]);
+    const init = async () => {
+      await requestPerms();
 
-                         // Send to Socket (Backend)
-                         socketService.sendRoadQualityUpdate(prediction, location);
-                     }
-                 }
-             });
-        };
+      // 1. Get token and connect socket
+      const token = await authService.getToken();
+      socketService.connect(ENV.API.BASE_URL, token ?? undefined);
 
-        const requestPerms = async () => {
-             if (Platform.OS === 'android') {
-                 await PermissionsAndroid.requestMultiple([
-                     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-                     PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION
-                 ]);
-             }
-        };
+      socketService.onConnect(() => {
+        if (mounted) setSocketConnected(true);
+      });
+      socketService.onDisconnect(() => {
+        if (mounted) setSocketConnected(false);
+      });
 
-        requestPerms().then(initServices);
+      // 2. Load all segments when socket first connects
+      socketService.onInitialSegments((segs) => {
+        if (!mounted) return;
+        const map: SegmentMap = {};
+        segs.forEach(s => { map[s.roadSegmentId] = s; });
+        setSegments(map);
+        setLoading(false);
+      });
 
-        return () => {
-            sensorService.stopCollection();
-        };
-    }, []);
+      // 3. Live segment updates
+      socketService.onSegmentUpdate((seg) => {
+        if (!mounted) return;
+        setSegments(prev => ({ ...prev, [seg.roadSegmentId]: seg }));
+      });
 
-    const toggleMonitoring = async () => {
-        if (isMonitoring) {
-            sensorService.stopCollection();
-            setIsMonitoring(false);
-        } else {
-            sensorService.startCollection((reading) => {
-                windowManager.addReading(reading);
-            });
-            setIsMonitoring(true);
-        }
+      // 4. Pothole pins
+      socketService.onMapPoint((pt) => {
+        if (!mounted) return;
+        setPotholes(prev => [pt, ...prev].slice(0, 200));
+      });
+
+      // 5. Init ML model
+      try {
+        await mlService.initialize();
+        if (mounted) setMlReady(true);
+      } catch (e) {
+        console.warn('[ML] init failed, using mock mode:', e);
+        if (mounted) setMlReady(true); // allow monitoring with mock
+      }
+
+      // Fallback: stop loading spinner after 8 seconds even if no segments
+      setTimeout(() => { if (mounted) setLoading(false); }, 8000);
     };
 
-    return (
-        <View style={styles.container}>
-            <MapboxGL.MapView
-                style={styles.map}
-                styleURL="mapbox://styles/mapbox/streets-v12"
-                logoEnabled={false}
-                attributionEnabled={true}
-                onDidFailLoadingMap={() => Alert.alert("Error", "Map failed to load")}
-            >
-                <MapboxGL.Camera
-                    zoomLevel={14}
-                    centerCoordinate={[ENV.MAP.DEFAULT_CENTER.longitude, ENV.MAP.DEFAULT_CENTER.latitude]}
-                    followUserLocation={true}
-                />
+    init();
 
-                <MapboxGL.UserLocation visible={true} />
+    return () => {
+      mounted = false;
+      socketService.removeAll();
+      sensorService.stopCollection();
+    };
+  }, []);
 
-                {markers.map(marker => (
-                    <MapboxGL.PointAnnotation
-                        key={marker.id}
-                        id={marker.id}
-                        coordinate={marker.coordinate}
-                    >
-                        <View style={{
-                             width: 15, height: 15, borderRadius: 8, 
-                             backgroundColor: ROAD_QUALITY_COLORS[marker.quality as 0|1|2|3],
-                             borderColor: 'white', borderWidth: 2
-                         }} />
-                    </MapboxGL.PointAnnotation>
-                ))}
-            </MapboxGL.MapView>
+  // ─── Window → ML → Backend pipeline ─────────────────────────────────────────
+  const startMonitoring = useCallback(async () => {
+    windowManager.init(async (windowData) => {
+      // Run ML inference
+      const prediction = await mlService.predict(windowData);
+      const quality = (prediction ?? 0) as RoadQuality;
+      setCurrentQuality(quality);
 
-            <View style={styles.overlay}>
-                {currentQuality !== null && (
-                     <View style={[styles.badge, { backgroundColor: ROAD_QUALITY_COLORS[currentQuality as 0|1|2|3] }]}>
-                         <Text style={styles.badgeText}>
-                             Current: {ROAD_QUALITY_LABELS[currentQuality as 0|1|2|3]}
-                         </Text>
-                     </View>
-                )}
+      const last = windowData[windowData.length - 1];
+      const { latitude, longitude } = last.location;
+      if (latitude === 0 && longitude === 0) return;
 
-                <TouchableOpacity 
-                    style={[styles.button, isMonitoring ? styles.buttonStop : styles.buttonStart]} 
-                    onPress={toggleMonitoring}
-                >
-                    <Text style={styles.buttonText}>
-                        {isMonitoring ? 'Stop Monitoring' : 'Start Monitoring'}
-                    </Text>
-                </TouchableOpacity>
+      // Map quality class to IRI score (rough mapping for backend)
+      const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
+      const hasPothole = quality >= 3;
 
-                <TouchableOpacity 
-                    style={[styles.button, styles.buttonLogout]} 
-                    onPress={() => {
-                        Alert.alert('Logout', 'Are you sure?', [
-                            { text: 'Cancel', style: 'cancel' },
-                            { text: 'Logout', style: 'destructive', onPress: async () => {
-                                await authService.logout();
-                                // Navigation prop should be passed or useNavigation hook
-                                // roughly assuming simple integration for now, but ideal to use prop
-                                if ((props as any).navigation) {
-                                     (props as any).navigation.replace('Login');
-                                }
-                            }}
-                        ]);
-                    }}
-                >
-                    <Text style={styles.buttonText}>Logout</Text>
-                </TouchableOpacity>
-            </View>
+      await observationService.submit({
+        latitude,
+        longitude,
+        iriScore,
+        hasPothole,
+        potholeConfidence: hasPothole ? 0.9 : 0,
+        speed: last.speed,
+      });
+    });
+
+    sensorService.startCollection((reading) => {
+      windowManager.add(reading);
+    });
+
+    setMonitoring(true);
+  }, []);
+
+  const stopMonitoring = useCallback(() => {
+    sensorService.stopCollection();
+    windowManager.reset();
+    setMonitoring(false);
+    setCurrentQuality(null);
+  }, []);
+
+  const toggleMonitoring = () => {
+    monitoring ? stopMonitoring() : startMonitoring();
+  };
+
+  // ─── GeoJSON sources ──────────────────────────────────────────────────────────
+  const segmentGeoJSON  = buildSegmentGeoJSON(segments);
+  const potholeGeoJSON  = buildPotholeGeoJSON(potholes);
+  const segmentCount    = Object.keys(segments).length;
+
+  // ─── Render ──────────────────────────────────────────────────────────────────
+  return (
+    <View style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+
+      {/* ── Map ── */}
+      <MapboxGL.MapView
+        style={styles.map}
+        styleURL="mapbox://styles/mapbox/dark-v11"
+        logoEnabled={false}
+        attributionEnabled={false}
+        compassEnabled
+        compassViewPosition={3}
+      >
+        <MapboxGL.Camera
+          ref={cameraRef}
+          zoomLevel={ENV.MAP.DEFAULT_ZOOM}
+          centerCoordinate={[ENV.MAP.DEFAULT_CENTER.longitude, ENV.MAP.DEFAULT_CENTER.latitude]}
+          followUserLocation={monitoring}
+          followZoomLevel={15}
+          animationMode="flyTo"
+          animationDuration={1000}
+        />
+
+        <MapboxGL.UserLocation visible androidRenderMode="compass" />
+
+        {/* Road segment polylines */}
+        {segmentCount > 0 && (
+          <MapboxGL.ShapeSource id="segments" shape={segmentGeoJSON} tolerance={0.5}>
+            {/* Glow / halo layer */}
+            <MapboxGL.LineLayer
+              id="segments-glow"
+              style={{
+                lineColor:   ['get', 'color'],
+                lineWidth:   8,
+                lineOpacity: 0.15,
+                lineBlur:    4,
+              }}
+            />
+            {/* Main coloured polyline */}
+            <MapboxGL.LineLayer
+              id="segments-line"
+              style={{
+                lineColor:    ['get', 'color'],
+                lineWidth:    4,
+                lineOpacity:  0.9,
+                lineCap:      'round',
+                lineJoin:     'round',
+              }}
+            />
+          </MapboxGL.ShapeSource>
+        )}
+
+        {/* Pothole markers */}
+        {potholes.length > 0 && (
+          <MapboxGL.ShapeSource id="potholes" shape={potholeGeoJSON}>
+            <MapboxGL.CircleLayer
+              id="pothole-circles"
+              style={{
+                circleColor:       '#F44336',
+                circleRadius:      8,
+                circleOpacity:     0.9,
+                circleStrokeColor: '#FFFFFF',
+                circleStrokeWidth: 2,
+              }}
+            />
+          </MapboxGL.ShapeSource>
+        )}
+      </MapboxGL.MapView>
+
+      {/* ── Top status bar ── */}
+      <View style={styles.topBar}>
+        <View style={styles.topBarLeft}>
+          <View style={[styles.dot, { backgroundColor: socketConnected ? COLORS.primary : COLORS.danger }]} />
+          <Text style={styles.topBarText}>
+            {socketConnected ? `${segmentCount} segments` : 'Connecting…'}
+          </Text>
         </View>
-    );
+        <TouchableOpacity
+          style={styles.logoutBtn}
+          onPress={async () => {
+            stopMonitoring();
+            await authService.logout();
+            navigation.replace('Login');
+          }}
+        >
+          <Text style={styles.logoutText}>Exit</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── Loading overlay ── */}
+      {loading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Loading road data…</Text>
+        </View>
+      )}
+
+      {/* ── Legend ── */}
+      <View style={styles.legend}>
+        {(['green', 'yellow', 'orange'] as IriCategory[]).map(cat => (
+          <View key={cat} style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: IRI_COLORS[cat] }]} />
+            <Text style={styles.legendText}>{IRI_LABELS[cat]}</Text>
+          </View>
+        ))}
+        <View style={styles.legendRow}>
+          <View style={[styles.legendDot, { backgroundColor: '#F44336' }]} />
+          <Text style={styles.legendText}>Pothole</Text>
+        </View>
+      </View>
+
+      {/* ── Bottom panel ── */}
+      <View style={styles.bottomPanel}>
+
+        {/* Current quality badge — visible while monitoring */}
+        {monitoring && currentQuality !== null && (
+          <View style={[styles.qualityBadge, { borderColor: QUALITY_COLORS[currentQuality] }]}>
+            <View style={[styles.qualityDot, { backgroundColor: QUALITY_COLORS[currentQuality] }]} />
+            <Text style={styles.qualityLabel}>
+              {QUALITY_LABELS[currentQuality]}
+            </Text>
+          </View>
+        )}
+
+        {/* ML / sensor status pill */}
+        {monitoring && (
+          <View style={styles.statusPill}>
+            <ActivityIndicator size="small" color={COLORS.primary} />
+            <Text style={styles.statusText}>Sensing road quality…</Text>
+          </View>
+        )}
+
+        {/* Main monitoring toggle */}
+        <TouchableOpacity
+          style={[
+            styles.monitorBtn,
+            monitoring ? styles.monitorBtnStop : styles.monitorBtnStart,
+            !mlReady && !monitoring && styles.btnDisabled,
+          ]}
+          onPress={toggleMonitoring}
+          disabled={!mlReady && !monitoring}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.monitorBtnIcon}>{monitoring ? '⏹' : '▶'}</Text>
+          <Text style={styles.monitorBtnText}>
+            {monitoring ? 'Stop Monitoring' : 'Start Monitoring'}
+          </Text>
+        </TouchableOpacity>
+
+      </View>
+    </View>
+  );
 };
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-    container: { ...StyleSheet.absoluteFillObject },
-    map: { ...StyleSheet.absoluteFillObject },
-    overlay: {
-        position: 'absolute',
-        bottom: 30,
-        left: 20,
-        right: 20,
-        alignItems: 'center'
-    },
-    badge: {
-        padding: 10,
-        borderRadius: 20,
-        marginBottom: 10,
-        elevation: 5
-    },
-    badgeText: {
-        fontWeight: 'bold',
-        color: '#fff', 
-        textShadowColor: 'rgba(0,0,0,0.5)', 
-        textShadowRadius: 2
-    },
-    button: {
-        width: '100%',
-        padding: 15,
-        borderRadius: 10,
-        alignItems: 'center',
-        elevation: 5
-    },
-    buttonStart: { backgroundColor: '#007AFF' },
-    buttonStop: { backgroundColor: '#FF3B30' },
-    buttonLogout: { backgroundColor: '#8e8e93', marginTop: 10 },
-    buttonText: { color: 'white', fontWeight: 'bold', fontSize: 16 }
+  root: { flex: 1, backgroundColor: COLORS.bg },
+  map:  { ...StyleSheet.absoluteFillObject },
+
+  // Top bar
+  topBar: {
+    position:        'absolute',
+    top:             48,
+    left:            16,
+    right:           16,
+    flexDirection:   'row',
+    justifyContent:  'space-between',
+    alignItems:      'center',
+    backgroundColor: 'rgba(13,13,13,0.85)',
+    borderRadius:    12,
+    paddingHorizontal: 14,
+    paddingVertical:   10,
+    borderWidth:     1,
+    borderColor:     COLORS.border,
+  },
+  topBarLeft:  { flexDirection: 'row', alignItems: 'center' },
+  dot:         { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
+  topBarText:  { color: COLORS.textSecondary, fontSize: 13, fontWeight: '600' },
+  logoutBtn:   { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: COLORS.surfaceLight },
+  logoutText:  { color: COLORS.textSecondary, fontSize: 13, fontWeight: '600' },
+
+  // Loading overlay
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(13,13,13,0.7)',
+    justifyContent:  'center',
+    alignItems:      'center',
+  },
+  loadingText: { color: COLORS.text, marginTop: 12, fontSize: 14 },
+
+  // Legend
+  legend: {
+    position:        'absolute',
+    top:             110,
+    right:           16,
+    backgroundColor: 'rgba(13,13,13,0.85)',
+    borderRadius:    12,
+    padding:         12,
+    borderWidth:     1,
+    borderColor:     COLORS.border,
+    gap:             8,
+  },
+  legendRow: { flexDirection: 'row', alignItems: 'center' },
+  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  legendText:{ color: COLORS.textSecondary, fontSize: 12, fontWeight: '500' },
+
+  // Bottom panel
+  bottomPanel: {
+    position:      'absolute',
+    bottom:        0,
+    left:          0,
+    right:         0,
+    backgroundColor: 'rgba(13,13,13,0.92)',
+    borderTopWidth:  1,
+    borderTopColor:  COLORS.border,
+    padding:         20,
+    paddingBottom:   32,
+    gap:             12,
+  },
+
+  // Quality badge
+  qualityBadge: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    alignSelf:        'center',
+    paddingHorizontal: 16,
+    paddingVertical:   10,
+    borderRadius:      24,
+    borderWidth:       1.5,
+    backgroundColor:   COLORS.surfaceLight,
+  },
+  qualityDot:   { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  qualityLabel: { color: COLORS.text, fontWeight: '700', fontSize: 15 },
+
+  // Status pill
+  statusPill: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    alignSelf:        'center',
+    gap:              8,
+    paddingHorizontal: 14,
+    paddingVertical:   6,
+    backgroundColor:   COLORS.surfaceLight,
+    borderRadius:      20,
+  },
+  statusText: { color: COLORS.textSecondary, fontSize: 12 },
+
+  // Monitor button
+  monitorBtn: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    justifyContent: 'center',
+    borderRadius:   14,
+    padding:        16,
+    gap:            10,
+  },
+  monitorBtnStart: { backgroundColor: COLORS.primary },
+  monitorBtnStop:  { backgroundColor: COLORS.danger },
+  monitorBtnIcon:  { fontSize: 18 },
+  monitorBtnText:  { color: '#fff', fontWeight: '700', fontSize: 16 },
+  btnDisabled:     { opacity: 0.45 },
 });
