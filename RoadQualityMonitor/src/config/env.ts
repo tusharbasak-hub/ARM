@@ -6,7 +6,7 @@
 
 export const ENV = {
   API: {
-    BASE_URL: 'http://127.0.0.1:5000', // Using adb reverse tcp:5000 tcp:5000 (falls back to http://10.187.115.154:5000 if using Wi-Fi direct)
+    BASE_URL: 'https://road-quality-monitor-backend.onrender.com', // Production backend hosted on Render
     TIMEOUT: 10000,
   },
 
