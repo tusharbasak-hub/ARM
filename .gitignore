@@ -38,4 +38,4 @@ ml_model/iri_v2
 ml_model/iri_compliant/KMP_mathura.csv
 
 # APK files
-app-release.apk
+*.apk
