@@ -17,6 +17,7 @@ const CONSENSUS_MIN_USERS = 1;       // Testing/Single-User Mode (Production: 3)
 const MILESTONE_THRESHOLD = 1;       // Testing/Single-User Mode (Production: 30)
 const CONSENSUS_RADIUS_METERS = 10;
 const CONSENSUS_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MATCH_MAX_DISTANCE_METERS = 40; // Max distance in meters to match observation to segment
 
 // ── Internal Helpers ───────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ async function resolveSegment(lat, lng, roadSegmentId) {
     geometry: {
       $near: {
         $geometry: { type: 'Point', coordinates: [lng, lat] },
-        $maxDistance: 500,
+        $maxDistance: MATCH_MAX_DISTANCE_METERS,
       },
     },
   }).lean();

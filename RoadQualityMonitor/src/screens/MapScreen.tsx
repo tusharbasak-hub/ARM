@@ -4,6 +4,7 @@ import {
   ActivityIndicator, Platform, PermissionsAndroid, StatusBar,
 } from 'react-native';
 import MapboxGL from '@rnmapbox/maps';
+import BackgroundActions from 'react-native-background-actions';
 import { ENV, COLORS, IRI_COLORS, IRI_LABELS, QUALITY_COLORS, QUALITY_LABELS, RoadQuality, IriCategory } from '../config/env';
 import { socketService, RoadSegmentUpdate, MapPoint } from '../services/socketService';
 import { sensorService } from '../services/sensorService';
@@ -67,10 +68,39 @@ export const MapScreen = ({ navigation }: any) => {
   // ─── Permissions ────────────────────────────────────────────────────────────
   const requestPerms = useCallback(async () => {
     if (Platform.OS === 'android') {
-      await PermissionsAndroid.requestMultiple([
+      const permissions = [
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-      ]);
+      ];
+
+      // Request notification permission on Android 13+ (API 33+)
+      if (Platform.Version >= 33) {
+        permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+      }
+
+      const granted = await PermissionsAndroid.requestMultiple(permissions);
+
+      const fineGranted = granted[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] === PermissionsAndroid.RESULTS.GRANTED;
+      const coarseGranted = granted[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION] === PermissionsAndroid.RESULTS.GRANTED;
+
+      // Ask for background permission on Android 10+ (API 29+)
+      if ((fineGranted || coarseGranted) && Platform.Version >= 29) {
+        try {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+            {
+              title: 'Background Location Permission',
+              message:
+                'This app collects location data to monitor road quality even when the app is in the background or screen is off.',
+              buttonNeutral: 'Ask Me Later',
+              buttonNegative: 'Cancel',
+              buttonPositive: 'OK',
+            }
+          );
+        } catch (err) {
+          console.warn('[Permissions] Background location permission request error:', err);
+        }
+      }
     }
   }, []);
 
@@ -132,45 +162,129 @@ export const MapScreen = ({ navigation }: any) => {
       mounted = false;
       socketService.removeAll();
       sensorService.stopCollection();
+      BackgroundActions.stop().catch(() => {});
     };
   }, []);
 
   // ─── Window → ML → Backend pipeline ─────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
-    windowManager.init(async (windowData) => {
-      // Run ML inference
-      const prediction = await mlService.predict(windowData);
-      const quality = (prediction ?? 0) as RoadQuality;
-      setCurrentQuality(quality);
+    // 1. Ensure background location permission is requested/granted on Android 10+
+    if (Platform.OS === 'android' && Platform.Version >= 29) {
+      const hasBackgroundPerm = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION
+      );
+      if (!hasBackgroundPerm) {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+          {
+            title: 'Background Location Permission',
+            message:
+              'To record road quality when the screen is off, please select "Allow all the time" in location settings.',
+            buttonPositive: 'OK',
+          }
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.warn('Background location permission not granted, tracking may fail when screen is off.');
+        }
+      }
+    }
 
-      const last = windowData[windowData.length - 1];
-      const { latitude, longitude } = last.location;
-      if (latitude === 0 && longitude === 0) return;
+    const options = {
+      taskName: 'RoadQualityMonitoring',
+      taskTitle: 'Monitoring Road Quality',
+      taskDesc: 'Sensing and analyzing road vibrations in the background...',
+      taskIcon: {
+        name: 'ic_launcher',
+        type: 'mipmap',
+      },
+      color: COLORS.primary,
+      parameters: {
+        delay: 1000,
+      },
+    };
 
-      // Map quality class to IRI score (rough mapping for backend)
-      const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
-      const hasPothole = quality >= 3;
+    const monitorBgTask = async (taskData?: any) => {
+      await new Promise<void>(async (resolve) => {
+        windowManager.init(async (windowData) => {
+          // Run ML inference
+          const prediction = await mlService.predict(windowData);
+          const quality = (prediction ?? 0) as RoadQuality;
+          setCurrentQuality(quality);
 
-      await observationService.submit({
-        latitude,
-        longitude,
-        iriScore,
-        hasPothole,
-        potholeConfidence: hasPothole ? 0.9 : 0,
-        speed: last.speed,
+          const last = windowData[windowData.length - 1];
+          const { latitude, longitude } = last.location;
+          if (latitude === 0 && longitude === 0) return;
+
+          // Map quality class to IRI score (rough mapping for backend)
+          const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
+          const hasPothole = quality >= 3;
+
+          await observationService.submit({
+            latitude,
+            longitude,
+            iriScore,
+            hasPothole,
+            potholeConfidence: hasPothole ? 0.9 : 0,
+            speed: last.speed,
+          });
+        });
+
+        sensorService.startCollection((reading) => {
+          windowManager.add(reading);
+        });
+
+        // Loop to keep background actions alive
+        while (BackgroundActions.isRunning()) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+
+        resolve();
       });
-    });
+    };
 
-    sensorService.startCollection((reading) => {
-      windowManager.add(reading);
-    });
+    try {
+      await BackgroundActions.start(monitorBgTask, options);
+      setMonitoring(true);
+    } catch (e) {
+      console.error('[BackgroundService] Failed to start:', e);
+      // Fallback to normal foreground monitoring if background actions fails
+      windowManager.init(async (windowData) => {
+        const prediction = await mlService.predict(windowData);
+        const quality = (prediction ?? 0) as RoadQuality;
+        setCurrentQuality(quality);
 
-    setMonitoring(true);
+        const last = windowData[windowData.length - 1];
+        const { latitude, longitude } = last.location;
+        if (latitude === 0 && longitude === 0) return;
+
+        const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
+        const hasPothole = quality >= 3;
+
+        await observationService.submit({
+          latitude,
+          longitude,
+          iriScore,
+          hasPothole,
+          potholeConfidence: hasPothole ? 0.9 : 0,
+          speed: last.speed,
+        });
+      });
+
+      sensorService.startCollection((reading) => {
+        windowManager.add(reading);
+      });
+      setMonitoring(true);
+    }
   }, []);
 
-  const stopMonitoring = useCallback(() => {
+  const stopMonitoring = useCallback(async () => {
     sensorService.stopCollection();
     windowManager.reset();
+    try {
+      await BackgroundActions.stop();
+    } catch (e) {
+      console.warn('[BackgroundService] Failed to stop:', e);
+    }
     setMonitoring(false);
     setCurrentQuality(null);
   }, []);

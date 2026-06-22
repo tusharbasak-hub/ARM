@@ -55,6 +55,36 @@ Production:
 npm start
 ```
 
+## Cloud Deployment (Render)
+
+This backend is ready to be deployed directly as a **Web Service** on [Render](https://render.com/).
+
+### Deployment Configuration:
+- **Root Directory:** `Backend`
+- **Build Command:** `npm install`
+- **Start Command:** `node src/server.js`
+
+### Environment Variables:
+Add the following keys in Render's **Environment** settings:
+- `NODE_ENV`: `production`
+- `MONGODB_URI`: *Your MongoDB Atlas connection string*
+- `JWT_SECRET`: *A secure random string for signing session tokens*
+- `JWT_EXPIRY`: `30d`
+- `CORS_ORIGIN`: `*`
+- `ROUTE_QUALITY_WEIGHT`: `0.7`
+- `ROUTE_DISTANCE_WEIGHT`: `0.3`
+- `ROUTE_CACHE_TTL`: `900`
+- `TIME_DECAY_HOURS`: `24`
+- `MIN_OBSERVATIONS_FOR_AGGREGATION`: `1`
+
+## Dynamic Map Matching & Seeding
+
+The system features a self-populating road database:
+1. When a client submits coordinates, the backend searches for a matching `RoadSegment` within 500 meters.
+2. If no segment is found, it automatically queries the public **OSRM API** (`/nearest/` endpoint) to resolve the nearest real-world road name and snapped coordinate.
+3. It creates and saves a new `RoadSegment` document in MongoDB with a generated `LineString` geometry and immediately broadcasts it to all connected apps via Socket.IO.
+4. Future observations near this road will automatically link to this segment.
+
 ## API Endpoints
 
 ### REST API
