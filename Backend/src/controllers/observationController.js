@@ -58,8 +58,14 @@ async function resolveSegment(lat, lng, roadSegmentId) {
         geometry: {
           type: 'LineString',
           coordinates: [
-            [matched.matchedLongitude - 0.0004, matched.matchedLatitude],
-            [matched.matchedLongitude + 0.0004, matched.matchedLatitude]
+            [
+              matched.matchedLongitude - 0.0004 * (matched.direction ? matched.direction[0] : 1),
+              matched.matchedLatitude - 0.0004 * (matched.direction ? matched.direction[1] : 0)
+            ],
+            [
+              matched.matchedLongitude + 0.0004 * (matched.direction ? matched.direction[0] : 1),
+              matched.matchedLatitude + 0.0004 * (matched.direction ? matched.direction[1] : 0)
+            ]
           ]
         },
         centerPoint: [matched.matchedLongitude, matched.matchedLatitude],
