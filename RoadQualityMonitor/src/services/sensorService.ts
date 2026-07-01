@@ -12,7 +12,7 @@ class SensorService {
     private currentAccel = { x: 0, y: 0, z: 0 };
     private currentGyro = { x: 0, y: 0, z: 0 };
     private currentSpeed = 0;
-    private currentLocation = { latitude: 0, longitude: 0 };
+    private currentLocation = { latitude: 0, longitude: 0, heading: -1 };
 
     private onReadingCallback: ((reading: any) => void) | null = null;
     private intervalId: any = null;
@@ -47,7 +47,8 @@ class SensorService {
             (position) => {
                 this.currentLocation = {
                     latitude: position.coords.latitude,
-                    longitude: position.coords.longitude
+                    longitude: position.coords.longitude,
+                    heading: position.coords.heading ?? -1
                 };
                 this.currentSpeed = position.coords.speed || 0; // Speed in m/s
                 if (this.currentSpeed < 0) this.currentSpeed = 0;

@@ -17,7 +17,7 @@ const CONSENSUS_MIN_USERS = 1;       // Testing/Single-User Mode (Production: 3)
 const MILESTONE_THRESHOLD = 1;       // Testing/Single-User Mode (Production: 30)
 const CONSENSUS_RADIUS_METERS = 10;
 const CONSENSUS_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;
-const MATCH_MAX_DISTANCE_METERS = 40; // Max distance in meters to match observation to segment
+const MATCH_MAX_DISTANCE_METERS = 80; // Max distance in meters to match observation to segment (optimized from 40m)
 
 // ── Internal Helpers ───────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ function passesConfidenceGate(hasPothole, potholeConfidence) {
   return potholeConfidence > POTHOLE_CONFIDENCE_THRESHOLD;
 }
 
-async function resolveSegment(lat, lng, roadSegmentId) {
+async function resolveSegment(lat, lng, roadSegmentId, sessionId, heading) {
   if (roadSegmentId) {
     const seg = await RoadSegment.findById(roadSegmentId).lean();
     if (seg) return seg;
@@ -43,9 +43,33 @@ async function resolveSegment(lat, lng, roadSegmentId) {
 
   if (nearest) return nearest;
 
-  // Dynamically match and create a new RoadSegment if none exists within 500m
+  // Calculate travel direction
+  let travelDirection = null;
+
+  // 1. Try to compute from GPS heading if valid (heading >= 0)
+  if (heading !== undefined && heading !== null && heading >= 0 && heading <= 360) {
+    const headingRad = (heading * Math.PI) / 180;
+    travelDirection = [Math.sin(headingRad), Math.cos(headingRad)];
+  }
+
+  // 2. Fallback to calculating from previous observation in same session
+  if (!travelDirection && sessionId) {
+    const prevObs = await Observation.findOne({ sessionId })
+      .sort({ recordedAt: -1 })
+      .lean();
+    if (prevObs) {
+      const dx = lng - prevObs.longitude;
+      const dy = lat - prevObs.latitude;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 1e-6) {
+        travelDirection = [dx / dist, dy / dist];
+      }
+    }
+  }
+
+  // Dynamically match and create a new RoadSegment if none exists within 80m
   try {
-    const matched = await mapMatching.matchPoint(lat, lng);
+    const matched = await mapMatching.matchPoint(lat, lng, travelDirection);
     if (!matched) return null;
 
     let seg = await RoadSegment.findOne({ roadSegmentId: matched.roadSegmentId }).lean();
@@ -59,12 +83,12 @@ async function resolveSegment(lat, lng, roadSegmentId) {
           type: 'LineString',
           coordinates: [
             [
-              matched.matchedLongitude - 0.0004 * (matched.direction ? matched.direction[0] : 1),
-              matched.matchedLatitude - 0.0004 * (matched.direction ? matched.direction[1] : 0)
+              matched.matchedLongitude - 0.00045 * (matched.direction ? matched.direction[0] : 1),
+              matched.matchedLatitude - 0.00045 * (matched.direction ? matched.direction[1] : 0)
             ],
             [
-              matched.matchedLongitude + 0.0004 * (matched.direction ? matched.direction[0] : 1),
-              matched.matchedLatitude + 0.0004 * (matched.direction ? matched.direction[1] : 0)
+              matched.matchedLongitude + 0.00045 * (matched.direction ? matched.direction[0] : 1),
+              matched.matchedLatitude + 0.00045 * (matched.direction ? matched.direction[1] : 0)
             ]
           ]
         },
@@ -167,7 +191,7 @@ async function verifyAndEmitPothole(observation) {
  */
 async function submitObservation(req, res) {
   try {
-    const { latitude, longitude, iriScore, hasPothole = false, potholeConfidence = 0, roadSegmentId, deviceId, sessionId, recordedAt } = req.body;
+    const { latitude, longitude, iriScore, hasPothole = false, potholeConfidence = 0, roadSegmentId, deviceId, sessionId, recordedAt, heading } = req.body;
 
     if (latitude === undefined || longitude === undefined) {
       return res.status(400).json({ error: 'latitude and longitude are required' });
@@ -180,7 +204,7 @@ async function submitObservation(req, res) {
       return res.status(202).json({ accepted: false, reason: 'potholeConfidence below threshold.' });
     }
 
-    const segment = await resolveSegment(latitude, longitude, roadSegmentId);
+    const segment = await resolveSegment(latitude, longitude, roadSegmentId, sessionId, heading);
     if (!segment) {
       return res.status(404).json({ error: 'No road segment found near coordinates' });
     }
@@ -242,7 +266,7 @@ async function submitPatch(req, res) {
         continue;
       }
 
-      const segment = await resolveSegment(reading.latitude, reading.longitude, reading.roadSegmentId);
+      const segment = await resolveSegment(reading.latitude, reading.longitude, reading.roadSegmentId, reading.sessionId, reading.heading);
       if (!segment) {
         skipped.push({ latitude: reading.latitude, longitude: reading.longitude, reason: 'no segment found' });
         continue;

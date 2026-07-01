@@ -5,7 +5,7 @@ const axios = require('axios');
  */
 class MapMatchingService {
     constructor() {
-        this.baseUrl = process.env.MAP_MATCHING_API_URL || 'http://router.project-osrm.org/match/v1/driving';
+        this.baseUrl = process.env.MAP_MATCHING_API_URL || 'https://routing.openstreetmap.de/routed-car/match/v1/driving';
     }
 
     /**
@@ -30,9 +30,10 @@ class MapMatchingService {
      * Match a single GPS point to nearest road
      * @param {number} latitude 
      * @param {number} longitude 
+     * @param {Array} fallbackDirection
      * @returns {Object} Matched road segment info
      */
-    async matchPoint(latitude, longitude) {
+    async matchPoint(latitude, longitude, fallbackDirection = null) {
         try {
             // For single point, use nearest service instead of match
             const nearestUrl = this.baseUrl.replace('/match/', '/nearest/');
@@ -49,7 +50,7 @@ class MapMatchingService {
             const matchedLat = waypoint.location[1];
 
             // Determine road direction by offsetting and snapping
-            let direction = [1, 0]; // Default horizontal direction (E-W)
+            let direction = fallbackDirection || [1, 0]; // Default or fallback direction
 
             // Try East offset (+0.0003 deg longitude) and North offset (+0.0003 deg latitude)
             const eastSnap = await this.snapCoordinate(matchedLat, matchedLng + 0.0003);
@@ -88,7 +89,7 @@ class MapMatchingService {
             };
         } catch (error) {
             console.error('Map matching error:', error.message);
-            // Fallback: return original point with low confidence and default horizontal direction
+            // Fallback: return original point with low confidence and default/fallback direction
             return {
                 roadSegmentId: this.generateFallbackSegmentId(latitude, longitude),
                 matchedLatitude: latitude,
@@ -96,7 +97,7 @@ class MapMatchingService {
                 distance: 0,
                 confidence: 0.3,
                 roadName: 'Unknown Road',
-                direction: [1, 0]
+                direction: fallbackDirection || [1, 0]
             };
         }
     }

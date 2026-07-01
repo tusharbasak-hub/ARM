@@ -64,6 +64,7 @@ export const MapScreen = ({ navigation }: any) => {
   const [loading,         setLoading]         = useState(true);
 
   const cameraRef = useRef<MapboxGL.Camera>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   // ─── Permissions ────────────────────────────────────────────────────────────
   const requestPerms = useCallback(async () => {
@@ -168,6 +169,9 @@ export const MapScreen = ({ navigation }: any) => {
 
   // ─── Window → ML → Backend pipeline ─────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
+    // Generate a unique session ID
+    sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
+
     // 1. Ensure background location permission is requested/granted on Android 10+
     if (Platform.OS === 'android' && Platform.Version >= 29) {
       const hasBackgroundPerm = await PermissionsAndroid.check(
@@ -226,6 +230,8 @@ export const MapScreen = ({ navigation }: any) => {
             hasPothole,
             potholeConfidence: hasPothole ? 0.9 : 0,
             speed: last.speed,
+            heading: last.location.heading !== -1 ? last.location.heading : undefined,
+            sessionId: sessionIdRef.current ?? undefined,
           });
         });
 
@@ -267,6 +273,8 @@ export const MapScreen = ({ navigation }: any) => {
           hasPothole,
           potholeConfidence: hasPothole ? 0.9 : 0,
           speed: last.speed,
+          heading: last.location.heading !== -1 ? last.location.heading : undefined,
+          sessionId: sessionIdRef.current ?? undefined,
         });
       });
 
@@ -287,6 +295,7 @@ export const MapScreen = ({ navigation }: any) => {
     }
     setMonitoring(false);
     setCurrentQuality(null);
+    sessionIdRef.current = null;
   }, []);
 
   const toggleMonitoring = () => {

@@ -50,8 +50,8 @@ async function run() {
                 const dy = matched.direction[1];
 
                 const coordinates = [
-                    [matched.matchedLongitude - 0.0004 * dx, matched.matchedLatitude - 0.0004 * dy],
-                    [matched.matchedLongitude + 0.0004 * dx, matched.matchedLatitude + 0.0004 * dy]
+                    [matched.matchedLongitude - 0.00045 * dx, matched.matchedLatitude - 0.00045 * dy],
+                    [matched.matchedLongitude + 0.00045 * dx, matched.matchedLatitude + 0.00045 * dy]
                 ];
 
                 await RoadSegment.findByIdAndUpdate(seg._id, {
