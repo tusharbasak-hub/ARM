@@ -1,0 +1,23 @@
+% LaTeX Table V for IEEE/ACM Journal Submission
+\begin{table*}[t]
+\centering
+\caption{Comprehensive Comparison of Baseline Machine Learning Models for Smartphone IMU-Based IRI Estimation}
+\label{tab:baseline_comparison}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Model Family} & \textbf{Model Architecture} & \textbf{MAE (m/km)} $\downarrow$ & \textbf{RMSE (m/km)} $\downarrow$ & \textbf{Pearson $r$} $\uparrow$ & \textbf{$R^2$ Score} $\uparrow$ & \textbf{Latency (ms)} $\downarrow$ \\
+\midrule
+Linear Baselines & Ridge Regression & 2.7988 & 5.812 & 0.4714 & -1.4232 & 0.0 \\
+Tabular Ensembles & Random Forest & 2.2102 & 3.1294 & 0.6742 & 0.2975 & 0.0273 \\
+ & XGBoost & 2.1154 & 3.0397 & 0.6881 & 0.3372 & 0.0026 \\
+ & LightGBM & 2.075 & 2.9793 & 0.695 & 0.3633 & 0.0231 \\
+ & CatBoost & 2.0303 & 2.8926 & 0.7038 & 0.3998 & 0.0075 \\
+Recurrent & Sequential RNNs & 2-Layer Bi-LSTM & 2.3748 & 3.4643 & 0.3819 & 0.139 & 3.4087 \\
+ & 2-Layer GRU & 2.254 & 3.4181 & 0.4264 & 0.1619 & 1.6142 \\
+Hybrid Late-Fusion & Bi-LSTM + Context & 2.2984 & 3.4304 & 0.4184 & 0.1558 & 0.9968 \\
+Convolutional Networks & Standard 1D-CNN (Uncalibrated) & 1.7051 & 3.0169 & 0.6495 & 0.3471 & 0.2356 \\
+\midrule
+\textbf{} & \textbf{Proposed 1D-CNN + PICA (Section VII)} & \textbf{1.642} & \textbf{2.661} & \textbf{0.716} & \textbf{0.493} & \textbf{0.42} \\
+\bottomrule
+\end{tabular}
+\end{table*}

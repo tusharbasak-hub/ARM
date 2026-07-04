@@ -46,6 +46,12 @@ ml_model/review_work/data/PVS_*.csv
 ml_model/review_work/outputs/maps/PVS_*.html
 !ml_model/review_work/outputs/maps/PVS_2_interactive_map.html
 
+# Ignore heavy ML baseline intermediate datasets and binary model checkpoints (>100MB)
+ml_model/baseline/data/
+ml_model/baseline/outputs/models/
+ml_model/baseline/catboost_info/
+catboost_info/
+
 # APK files
 app-release.apk
 .apk

@@ -1,0 +1,19 @@
+# Table V: Comprehensive Baseline Machine Learning Comparison
+
+Evaluated on the held-out test set (`automation_test_track_trip_2` and `trip_3` across 1,903 spatial windows).
+
+| Family                      | Model Architecture                   |   MAE (m/km) |   RMSE (m/km) |   Pearson r |   R2 Score |   Inference Latency (ms) |
+|:----------------------------|:-------------------------------------|-------------:|--------------:|------------:|-----------:|-------------------------:|
+| Linear Baselines            | Ridge Regression                     |       2.7988 |        5.812  |      0.4714 |    -1.4232 |                   0      |
+| Tabular Ensembles           | Random Forest                        |       2.2102 |        3.1294 |      0.6742 |     0.2975 |                   0.0273 |
+| Tabular Ensembles           | XGBoost                              |       2.1154 |        3.0397 |      0.6881 |     0.3372 |                   0.0026 |
+| Tabular Ensembles           | LightGBM                             |       2.075  |        2.9793 |      0.695  |     0.3633 |                   0.0231 |
+| Tabular Ensembles           | CatBoost                             |       2.0303 |        2.8926 |      0.7038 |     0.3998 |                   0.0075 |
+| Recurrent & Sequential RNNs | 2-Layer Bi-LSTM                      |       2.3748 |        3.4643 |      0.3819 |     0.139  |                   3.4087 |
+| Recurrent & Sequential RNNs | 2-Layer GRU                          |       2.254  |        3.4181 |      0.4264 |     0.1619 |                   1.6142 |
+| Hybrid Late-Fusion          | Bi-LSTM + Context                    |       2.2984 |        3.4304 |      0.4184 |     0.1558 |                   0.9968 |
+| Convolutional Networks      | Standard 1D-CNN (Uncalibrated)       |       1.7051 |        3.0169 |      0.6495 |     0.3471 |                   0.2356 |
+| Convolutional Networks      | Proposed 1D-CNN + PICA (Section VII) |       1.642  |        2.661  |      0.716  |     0.493  |                   0.42   |
+
+---
+*Note: Lower MAE, RMSE and higher Pearson r, R² indicate superior regression performance. The Proposed 1D-CNN + PICA (Section VII) incorporates asymmetric Huber loss and post-training isotonic regression calibration.*

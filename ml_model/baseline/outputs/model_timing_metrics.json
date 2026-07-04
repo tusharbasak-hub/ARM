@@ -1,0 +1,38 @@
+{
+    "Ridge Regression": {
+        "train_time_s": 0.23,
+        "inf_ms_per_sample": 0.0
+    },
+    "Random Forest": {
+        "train_time_s": 3.52,
+        "inf_ms_per_sample": 0.027327555076611148
+    },
+    "XGBoost": {
+        "train_time_s": 0.96,
+        "inf_ms_per_sample": 0.0026272399389173757
+    },
+    "LightGBM": {
+        "train_time_s": 0.58,
+        "inf_ms_per_sample": 0.02312309417484061
+    },
+    "CatBoost": {
+        "train_time_s": 2.3,
+        "inf_ms_per_sample": 0.007526785589429622
+    },
+    "2-Layer Bi-LSTM": {
+        "train_time_s": 120.0,
+        "inf_ms_per_sample": 3.4086517578541953
+    },
+    "2-Layer GRU": {
+        "train_time_s": 114.32,
+        "inf_ms_per_sample": 1.6142115490222315
+    },
+    "Bi-LSTM + Context": {
+        "train_time_s": 70.42795515060425,
+        "inf_ms_per_sample": 0.9967604249762787
+    },
+    "Proposed 1D-CNN": {
+        "train_time_s": 27.672983646392822,
+        "inf_ms_per_sample": 0.23559251084681002
+    }
+}
