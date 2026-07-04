@@ -253,12 +253,10 @@ TIP
 
 By adding a comparison table showing that our dual-branch 1D-CNN with Asymmetric Huber Loss outperforms XGBoost and LSTM baselines on our BeamNG dataset, and concurrently demonstrating that our pre-trained model successfully classifies real-world physical road roughness on the open-source PVS smartphone dataset without retraining, we effectively eliminate both primary reviewer objections (lack of baseline comparisons and absence of sim-to-real validation) at zero financial cost and within less than two days of engineering effort. This strategy directly leverages our physics-grounded velocity normalization to prove that our model is a scientifically credible, vehicle-invariant road condition sensor.
 
-
 # Points to Note Down:
 
-
-
 #### Could "Good / Regular / Bad" mean something different than just IRI?
+
 YES! This is a profound observation and belongs directly in the Discussion section of your journal paper.
 
 There is a fundamental biomechanical and physical difference between crowdsourced human road quality labels and physical IRI displacement:

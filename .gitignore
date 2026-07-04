@@ -52,6 +52,10 @@ ml_model/baseline/outputs/models/
 ml_model/baseline/catboost_info/
 catboost_info/
 
+# Ignore intermediate processed trip data and duplicate figures for speed invariance stress test
+ml_model/speed_invariance_test/data/
+ml_model/speed_invariance_test/figures/*_trimmed_750m.*
+
 # APK files
 app-release.apk
 .apk

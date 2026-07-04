@@ -1,0 +1,45 @@
+here the sample numbers are for each vehicle and trip on the "automation_test_track" 
+structured as:
+<vehicle name>_<trip number>
+start: <sample number of the starting point>
+end: <sample number of the ending point>
+
+eg: 
+sunburst2_1
+start: 2200
+end: 19960 
+
+means sunburst2/automation_test_track/trip_1
+
+fyi:
+roamer_3, sunburst2_2 is are very rash dirivven trips, they are fast, but rash driving on bad road ended up in accident, so they don't go till the same "end" point as in other trips, the "end" in them represents the high speed driven part but right before any accident, so no weird but usefull readings 
+
+
+
+roamer_1
+start: 2245
+end: 16820
+
+roamer_2
+start: 2100
+end: 16915
+
+roamer_3
+start: 1525
+end: 5315
+
+sunburst2_1
+start: 2200
+end: 19960
+
+sunburst2_2
+start: 2255
+end: 13235
+
+vivace_1
+start: 1945
+end: 15915
+
+vivace_2
+start: 2170
+end: 15610
