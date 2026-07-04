@@ -36,6 +36,20 @@ node_modules/
 .env
 ml_model/iri_v2
 ml_model/iri_compliant/KMP_mathura.csv
+ml_model/iri_compliant/delhi_mumbai_expressway.csv
+
+# Ignore heavy PVS intermediate dataset files (Trips 1, 3-9) to avoid GitHub >100MB errors
+ml_model/review_work/data/PVS_*.csv
+!ml_model/review_work/data/PVS_2_*.csv
+
+# Ignore heavy individual HTML maps except Trip 2 and combined overview
+ml_model/review_work/outputs/maps/PVS_*.html
+!ml_model/review_work/outputs/maps/PVS_2_interactive_map.html
 
 # APK files
 app-release.apk
+better_roads
+
+
+# miscellaneous
+paper/to see.txt

@@ -1,0 +1,7 @@
+{
+  "T1": 3.8,
+  "T2": 11.7,
+  "best_macro_f1": 0.5684,
+  "best_bal_acc": 0.6065,
+  "metric": "balanced_accuracy"
+}
