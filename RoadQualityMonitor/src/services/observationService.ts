@@ -10,6 +10,8 @@ export interface ObservationPayload {
   deviceId?:         string;
   recordedAt?:       string;
   speed?:            number;
+  heading?:          number;
+  sessionId?:        string;
 }
 
 export const observationService = {

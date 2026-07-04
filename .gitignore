@@ -48,8 +48,4 @@ ml_model/review_work/outputs/maps/PVS_*.html
 
 # APK files
 app-release.apk
-better_roads
-
-
-# miscellaneous
-paper/to see.txt
+.apk
