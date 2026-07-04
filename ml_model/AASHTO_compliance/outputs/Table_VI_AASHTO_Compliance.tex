@@ -1,0 +1,21 @@
+% Table VI: AASHTO R 56 Compliance
+\begin{table}
+\caption{AASHTO R 56 Compliance and Benchmark Comparison Across Model Architectures}
+\label{tab:aashto_compliance}
+\begin{tabular}{llrrrrr}
+\toprule
+Family & Model Architecture & MAE (m/km) & RMSE (m/km) & Pearson r & R2 Score & AASHTO R 56 Compliance (%) \\
+\midrule
+Linear Baselines & Ridge Regression & 2.798800 & 5.812000 & 0.471400 & -1.423200 & 11.350000 \\
+Tabular Ensembles & Random Forest & 2.210200 & 3.129400 & 0.674200 & 0.297500 & 15.710000 \\
+Tabular Ensembles & XGBoost & 2.115400 & 3.039700 & 0.688100 & 0.337200 & 16.710000 \\
+Tabular Ensembles & LightGBM & 2.075000 & 2.979300 & 0.695000 & 0.363300 & 16.500000 \\
+Tabular Ensembles & CatBoost & 2.030300 & 2.892600 & 0.703800 & 0.399800 & 15.340000 \\
+Recurrent & Sequential RNNs & 2-Layer Bi-LSTM & 2.374800 & 3.464300 & 0.381900 & 0.139000 & 11.190000 \\
+Recurrent & Sequential RNNs & 2-Layer GRU & 2.254000 & 3.418100 & 0.426400 & 0.161900 & 13.720000 \\
+Hybrid Late-Fusion & Bi-LSTM + Context & 2.298400 & 3.430400 & 0.418400 & 0.155800 & 12.820000 \\
+Convolutional Networks & Standard 1D-CNN (Uncalibrated) & 1.705100 & 3.016900 & 0.649500 & 0.347100 & 17.970000 \\
+Convolutional Networks & Proposed 1D-CNN + PICA (Section VII) & 1.628300 & 2.446800 & 0.755300 & 0.570500 & 18.390000 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,7 @@
+Tolerance Envelope,Proposed 1D-CNN + PICA,CatBoost,XGBoost,Random Forest,2-Layer Bi-LSTM,Ridge Regression
+Tight (±0.15 m/km or ±5%),9.77,8.09,8.99,8.83,5.31,6.25
+AASHTO Standard (±0.25 m/km or ±10%),18.39,15.34,16.71,15.71,11.19,11.35
+Moderate (±0.35 m/km or ±15%),27.75,23.17,23.54,23.49,17.55,17.13
+Relaxed (±0.50 m/km or ±20%),35.05,30.74,29.95,29.8,23.23,23.8
+Broad (±0.75 m/km or ±30%),51.29,43.93,42.14,41.2,34.73,36.42
+Surveying (±1.00 m/km or ±40%),63.64,53.76,52.76,49.5,47.4,46.3
