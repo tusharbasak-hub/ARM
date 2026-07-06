@@ -59,6 +59,10 @@ ml_model/speed_invariance_test/figures/*_trimmed_750m.*
 # APK files
 app-release.apk
 .apk
+*.apk
 
 # Ignore heavy intermediate dataset files for AASHTO compliance evaluation
 ml_model/AASHTO_compliance/data/
+
+# Backups
+legacy_backup/
