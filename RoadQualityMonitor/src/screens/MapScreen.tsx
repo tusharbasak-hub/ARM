@@ -74,18 +74,20 @@ function buildPotholeGeoJSON(potholes: MapPoint[], livePotholes: any[], isDarkMo
 
   // 1. Historical Potholes
   potholes.forEach((p, i) => {
-    features.push({
-      type: 'Feature' as const,
-      id: `pothole_${i}`,
-      properties: {
-        iriScore: p.iriScore,
-        color: getPotholeColor(p.iriScore),
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [p.location.lng, p.location.lat],
-      },
-    });
+    if (p.hasPothole) {
+      features.push({
+        type: 'Feature' as const,
+        id: `pothole_${i}`,
+        properties: {
+          iriScore: p.iriScore,
+          color: getPotholeColor(p.iriScore),
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [p.location.lng, p.location.lat],
+        },
+      });
+    }
   });
 
   // 2. Live Potholes
@@ -432,7 +434,15 @@ export const MapScreen = ({ navigation }: any) => {
                   12, '#FF9800',  // Orange
                   15, '#F44336'   // Red (Saturates at red above 15)
                 ],
-                circleRadius: 14,
+                circleRadius: [
+                  'interpolate',
+                  ['exponential', 1.5],
+                  ['zoom'],
+                  10, 3,
+                  14, 8,
+                  17, 18,
+                  20, 35
+                ],
                 circleOpacity: 0.35,
               }}
             />
@@ -446,7 +456,15 @@ export const MapScreen = ({ navigation }: any) => {
               id="pothole-circles"
               style={{
                 circleColor: ['get', 'color'],
-                circleRadius: 8,
+                circleRadius: [
+                  'interpolate',
+                  ['exponential', 1.5],
+                  ['zoom'],
+                  10, 1.5,
+                  14, 4,
+                  17, 10,
+                  20, 20
+                ],
                 circleOpacity: 1.0,
                 circleStrokeColor: '#FFFFFF',
                 circleStrokeWidth: 1.5,
