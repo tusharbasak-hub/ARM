@@ -145,8 +145,6 @@ async function saveObservation(reading, segment) {
 }
 
 function emitMapPointEvent(observation) {
-  if (observation.markerType !== 'pothole') return; 
-
   const io = getIO();
   io.emit('map-point-event', {
     type:     observation.markerType,
@@ -212,9 +210,13 @@ async function submitObservation(req, res) {
     const reading = { latitude, longitude, iriScore, hasPothole, potholeConfidence, deviceId, sessionId, recordedAt };
     const obs     = await saveObservation(reading, segment);
 
-    verifyAndEmitPothole(obs).catch((err) => {
-      console.error('[Background Consensus Error]:', err.message);
-    });
+    if (obs.markerType === 'pothole') {
+      verifyAndEmitPothole(obs).catch((err) => {
+        console.error('[Background Consensus Error]:', err.message);
+      });
+    } else {
+      emitMapPointEvent(obs);
+    }
 
     const updatedSegment = await RoadSegment.findByIdAndUpdate(
       segment._id,
@@ -279,9 +281,13 @@ async function submitPatch(req, res) {
       if (!segmentDevicesMap[segKey]) segmentDevicesMap[segKey] = new Set();
       if (reading.deviceId) segmentDevicesMap[segKey].add(reading.deviceId);
 
-      verifyAndEmitPothole(obs).catch((err) => {
-        console.error('[Batch Background Consensus Error]:', err.message);
-      });
+      if (obs.markerType === 'pothole') {
+        verifyAndEmitPothole(obs).catch((err) => {
+          console.error('[Batch Background Consensus Error]:', err.message);
+        });
+      } else {
+        emitMapPointEvent(obs);
+      }
     }
 
     for (const segId of Object.keys(segmentDevicesMap)) {

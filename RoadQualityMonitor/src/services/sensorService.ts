@@ -3,7 +3,7 @@ import Geolocation from 'react-native-geolocation-service';
 import { map } from 'rxjs/operators';
 import { Platform, PermissionsAndroid } from 'react-native';
 
-const SAMPLING_INTERVAL_MS = 100; // 10Hz
+const SAMPLING_INTERVAL_MS = 20; // 50Hz
 
 class SensorService {
     private accelSubscription: any = null;

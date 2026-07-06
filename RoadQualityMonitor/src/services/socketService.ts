@@ -6,6 +6,7 @@ export interface RoadSegmentUpdate {
   averageIri:    number;
   sampleCount:   number;
   polyline:      { type: string; coordinates: number[][] };
+  centerPoint?:  number[];
   name?:         string;
   updatedAt?:    string;
 }
@@ -26,11 +27,12 @@ class SocketService {
   private _connected = false;
 
   // typed listener maps
-  private segmentListeners:     Listener<RoadSegmentUpdate>[]  = [];
-  private initialSegListeners:  Listener<RoadSegmentUpdate[]>[] = [];
-  private mapPointListeners:    Listener<MapPoint>[]            = [];
-  private connectListeners:     Listener<void>[]                = [];
-  private disconnectListeners:  Listener<void>[]                = [];
+  private segmentListeners:          Listener<RoadSegmentUpdate>[]  = [];
+  private initialSegListeners:       Listener<RoadSegmentUpdate[]>[] = [];
+  private mapPointListeners:         Listener<MapPoint>[]            = [];
+  private initialMapPointsListeners: Listener<MapPoint[]>[]          = [];
+  private connectListeners:          Listener<void>[]                = [];
+  private disconnectListeners:       Listener<void>[]                = [];
 
   get connected() { return this._connected; }
 
@@ -62,6 +64,11 @@ class SocketService {
       this.initialSegListeners.forEach(fn => fn(data.segments));
     });
 
+    // Bulk initial map points — sent once on connection
+    this.socket.on('initial-map-points', (data: { points: MapPoint[] }) => {
+      this.initialMapPointsListeners.forEach(fn => fn(data.points));
+    });
+
     // Live per-segment update after aggregation fires
     this.socket.on('segment-polyline-update', (data: RoadSegmentUpdate) => {
       this.segmentListeners.forEach(fn => fn(data));
@@ -83,15 +90,17 @@ class SocketService {
   onConnect(fn: Listener<void>)                        { this.connectListeners.push(fn); }
   onDisconnect(fn: Listener<void>)                     { this.disconnectListeners.push(fn); }
   onInitialSegments(fn: Listener<RoadSegmentUpdate[]>) { this.initialSegListeners.push(fn); }
+  onInitialMapPoints(fn: Listener<MapPoint[]>)         { this.initialMapPointsListeners.push(fn); }
   onSegmentUpdate(fn: Listener<RoadSegmentUpdate>)     { this.segmentListeners.push(fn); }
   onMapPoint(fn: Listener<MapPoint>)                   { this.mapPointListeners.push(fn); }
 
   removeAll() {
-    this.segmentListeners      = [];
-    this.initialSegListeners   = [];
-    this.mapPointListeners     = [];
-    this.connectListeners      = [];
-    this.disconnectListeners   = [];
+    this.segmentListeners          = [];
+    this.initialSegListeners       = [];
+    this.mapPointListeners         = [];
+    this.initialMapPointsListeners = [];
+    this.connectListeners          = [];
+    this.disconnectListeners       = [];
   }
 }
 

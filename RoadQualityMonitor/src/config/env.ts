@@ -23,9 +23,27 @@ export const ENV = {
     'pk.eyJ1IjoidHVzaGFyYmFzYWsiLCJhIjoiY21rcmE4ZWV4MHdjYzNnczZxMXVyMWFmbiJ9.qMgF1d8iOC4XVP_iQetlPA',
 
   ML: {
-    MODEL_FILE: require('../../assets/ml-model/model.tflite'),
+    IRI_MODEL_FILE: require('../../assets/ml-model/iri_background_model.tflite'),
+    POTHOLE_MODEL_FILE: require('../../assets/ml-model/road_vision_final_float16.tflite'),
+    MODEL_FILE: require('../../assets/ml-model/iri_background_model.tflite'), // fallback
     SCALER_FILE: require('../../assets/ml-model/scaler_params.json'),
     WINDOW_SIZE: 20,
+  },
+
+  VISUALIZATION: {
+    IRI_GRADIENT_STOPS: [
+      { value: 0, color: '#4CAF50' },   // Green
+      { value: 4, color: '#8BC34A' },   // Light Green
+      { value: 8, color: '#FFC107' },   // Yellow
+      { value: 12, color: '#FF9800' },  // Orange
+      { value: 15, color: '#F44336' },  // Red (saturates above 15)
+    ],
+    POTHOLE_COLORS: {
+      patches: '#FFC107',        // Yellow
+      medPothole: '#FF9800',     // Orange
+      bigPotholeLight: '#800000', // Maroon
+      bigPotholeDark: '#FF0033',  // Neon Red
+    }
   },
 } as const;
 
@@ -48,17 +66,17 @@ export const IRI_LABELS: Record<IriCategory, string> = {
 export type RoadQuality = 0 | 1 | 2 | 3;
 
 export const QUALITY_COLORS: Record<RoadQuality, string> = {
-  0: '#4CAF50', // Good  → green
-  1: '#FFC107', // Avg   → yellow
-  2: '#FF5722', // Bad   → orange
-  3: '#F44336', // Worst → red
+  0: '#4CAF50', // Excellent → green
+  1: '#FFC107', // Patches   → yellow
+  2: '#FF9800', // Med Pothole → orange
+  3: '#F44336', // Big Pothole → red
 };
 
 export const QUALITY_LABELS: Record<RoadQuality, string> = {
-  0: 'Good',
-  1: 'Average',
-  2: 'Bad',
-  3: 'Very Bad',
+  0: 'Excellent',
+  1: 'Patches',
+  2: 'Med Pothole',
+  3: 'Big Pothole',
 };
 
 // ─── App colour palette (dark theme) ─────────────────────────────────────────

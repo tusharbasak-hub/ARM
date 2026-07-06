@@ -90,10 +90,10 @@ async function _sendInitialState(socket) {
     })),
   });
 
-  // Redundant perfect markers tracking removed entirely for resource footprint tuning
-  const recentPoints = await Observation.find({ markerType: 'pothole' })
+  // Send all recent observations (potholes and IRI predictions) for dual-layer map plotting
+  const recentPoints = await Observation.find({})
     .sort({ recordedAt: -1 })
-    .limit(500)
+    .limit(1000)
     .select('latitude longitude iriScore hasPothole potholeConfidence markerType recordedAt')
     .lean();
 

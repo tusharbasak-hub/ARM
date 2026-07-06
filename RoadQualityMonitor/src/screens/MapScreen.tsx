@@ -1,14 +1,15 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
   ActivityIndicator, Platform, PermissionsAndroid, StatusBar,
+  Modal, useColorScheme,
 } from 'react-native';
 import MapboxGL from '@rnmapbox/maps';
 import BackgroundActions from 'react-native-background-actions';
-import { ENV, COLORS, IRI_COLORS, IRI_LABELS, QUALITY_COLORS, QUALITY_LABELS, RoadQuality, IriCategory } from '../config/env';
+import { ENV, COLORS, IRI_COLORS, QUALITY_COLORS, QUALITY_LABELS, RoadQuality, IriCategory } from '../config/env';
 import { socketService, RoadSegmentUpdate, MapPoint } from '../services/socketService';
 import { sensorService } from '../services/sensorService';
-import { windowManager } from '../services/windowService';
+import { windowManager, SensorReading } from '../services/windowService';
 import { mlService } from '../services/mlService';
 import { observationService } from '../services/observationService';
 import { authService } from '../services/authService';
@@ -18,50 +19,113 @@ MapboxGL.setAccessToken(ENV.MAPBOX_TOKEN);
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface SegmentMap { [id: string]: RoadSegmentUpdate }
 
-// ─── GeoJSON helpers ──────────────────────────────────────────────────────────
-function buildSegmentGeoJSON(segments: SegmentMap) {
-  const features = Object.values(segments)
-    .filter(s => s.polyline?.coordinates?.length >= 2)
-    .map(s => ({
+// ─── GeoJSON builders ──────────────────────────────────────────────────────────
+function buildIriGeoJSON(segments: SegmentMap, liveIriPoints: any[]) {
+  const features: any[] = [];
+
+  // 1. Historical segments represented as dots at their center points
+  Object.values(segments).forEach(s => {
+    const coords = s.centerPoint || (s.polyline?.coordinates?.length > 0 ? s.polyline.coordinates[0] : null);
+    if (coords) {
+      features.push({
+        type: 'Feature' as const,
+        id: `seg_${s.roadSegmentId}`,
+        properties: {
+          iriScore: s.averageIri,
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: coords,
+        },
+      });
+    }
+  });
+
+  // 2. Live IRI predictions (every 100m)
+  liveIriPoints.forEach((p, i) => {
+    features.push({
       type: 'Feature' as const,
-      id:   s.roadSegmentId,
+      id: `live_iri_${i}`,
       properties: {
-        iriCategory: s.iriCategory,
-        color:       IRI_COLORS[s.iriCategory as IriCategory] ?? '#9E9E9E',
-        iriScore:    s.averageIri,
-        name:        s.name ?? '',
+        iriScore: p.iriScore,
       },
       geometry: {
-        type:        'LineString' as const,
-        coordinates: s.polyline.coordinates,
+        type: 'Point' as const,
+        coordinates: [p.longitude, p.latitude],
       },
-    }));
+    });
+  });
 
   return { type: 'FeatureCollection' as const, features };
 }
 
-function buildPotholeGeoJSON(points: MapPoint[]) {
-  const features = points.map((p, i) => ({
-    type: 'Feature' as const,
-    id:   `pothole_${i}`,
-    properties: { iriScore: p.iriScore },
-    geometry: {
-      type:        'Point' as const,
-      coordinates: [p.location.lng, p.location.lat],
-    },
-  }));
+function buildPotholeGeoJSON(potholes: MapPoint[], livePotholes: any[], isDarkMode: boolean) {
+  const features: any[] = [];
+
+  const getPotholeColor = (score: number) => {
+    if (score >= 4.0) {
+      return isDarkMode ? '#FF0033' : '#800000'; // Neon red vs Maroon
+    } else if (score >= 2.5) {
+      return '#FF9800'; // Orange (Med Pothole)
+    } else {
+      return '#FFC107'; // Yellow (Patches)
+    }
+  };
+
+  // 1. Historical Potholes
+  potholes.forEach((p, i) => {
+    features.push({
+      type: 'Feature' as const,
+      id: `pothole_${i}`,
+      properties: {
+        iriScore: p.iriScore,
+        color: getPotholeColor(p.iriScore),
+      },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [p.location.lng, p.location.lat],
+      },
+    });
+  });
+
+  // 2. Live Potholes
+  livePotholes.forEach((p, i) => {
+    features.push({
+      type: 'Feature' as const,
+      id: `live_pothole_${i}`,
+      properties: {
+        iriScore: p.iriScore,
+        color: getPotholeColor(p.iriScore),
+      },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [p.longitude, p.latitude],
+      },
+    });
+  });
+
   return { type: 'FeatureCollection' as const, features };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export const MapScreen = ({ navigation }: any) => {
-  const [segments,        setSegments]        = useState<SegmentMap>({});
-  const [potholes,        setPotholes]        = useState<MapPoint[]>([]);
-  const [monitoring,      setMonitoring]      = useState(false);
-  const [currentQuality,  setCurrentQuality]  = useState<RoadQuality | null>(null);
-  const [socketConnected, setSocketConnected] = useState(false);
-  const [mlReady,         setMlReady]         = useState(false);
-  const [loading,         setLoading]         = useState(true);
+  const systemTheme = useColorScheme();
+  const isDarkMode = systemTheme === 'dark';
+
+  const [segments,          setSegments]          = useState<SegmentMap>({});
+  const [potholes,          setPotholes]          = useState<MapPoint[]>([]);
+  const [liveIriPoints,     setLiveIriPoints]     = useState<any[]>([]);
+  const [livePotholePoints, setLivePotholePoints] = useState<any[]>([]);
+
+  const [monitoring,        setMonitoring]        = useState(false);
+  const [currentQuality,    setCurrentQuality]    = useState<RoadQuality | null>(null);
+  const [socketConnected,   setSocketConnected]   = useState(false);
+  const [mlReady,           setMlReady]           = useState(false);
+  const [loading,           setLoading]           = useState(true);
+
+  // Vehicle selection modal state
+  const [showVehicleModal,  setShowVehicleModal]  = useState(false);
+  const [vehicleId,         setVehicleId]         = useState<number>(0); // SUV=0, Hatchback=1, Sedan=2
 
   const cameraRef = useRef<MapboxGL.Camera>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -138,19 +202,25 @@ export const MapScreen = ({ navigation }: any) => {
         setSegments(prev => ({ ...prev, [seg.roadSegmentId]: seg }));
       });
 
-      // 4. Pothole pins
+      // 4. Live map points (Potholes)
       socketService.onMapPoint((pt) => {
         if (!mounted) return;
-        setPotholes(prev => [pt, ...prev].slice(0, 200));
+        setPotholes(prev => [pt, ...prev].slice(0, 500));
       });
 
-      // 5. Init ML model
+      // 5. Initial map points (Potholes history on load)
+      socketService.onInitialMapPoints((pts) => {
+        if (!mounted) return;
+        setPotholes(pts);
+      });
+
+      // 6. Init ML model
       try {
         await mlService.initialize();
         if (mounted) setMlReady(true);
       } catch (e) {
         console.warn('[ML] init failed, using mock mode:', e);
-        if (mounted) setMlReady(true); // allow monitoring with mock
+        if (mounted) setMlReady(true);
       }
 
       // Fallback: stop loading spinner after 8 seconds even if no segments
@@ -167,12 +237,12 @@ export const MapScreen = ({ navigation }: any) => {
     };
   }, []);
 
-  // ─── Window → ML → Backend pipeline ─────────────────────────────────────────
-  const startMonitoring = useCallback(async () => {
+  // ─── Dual-Model ML Inference Session Start ──────────────────────────────────
+  const startMonitoring = useCallback(async (selectedVehId: number) => {
     // Generate a unique session ID
     sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
 
-    // 1. Ensure background location permission is requested/granted on Android 10+
+    // Ensure background location permission is requested/granted on Android 10+
     if (Platform.OS === 'android' && Platform.Version >= 29) {
       const hasBackgroundPerm = await PermissionsAndroid.check(
         PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION
@@ -207,41 +277,72 @@ export const MapScreen = ({ navigation }: any) => {
       },
     };
 
+    // Shared callbacks for model prediction results
+    const onIriReady = async (iriScore: number, lastReading: SensorReading) => {
+      const { latitude, longitude, heading } = lastReading.location;
+      if (latitude === 0 && longitude === 0) return;
+
+      // Add to live IRI points (plotted in background layer)
+      setLiveIriPoints(prev => [...prev, { latitude, longitude, iriScore }]);
+
+      // Submit observation to backend
+      await observationService.submit({
+        latitude,
+        longitude,
+        iriScore,
+        hasPothole: false,
+        potholeConfidence: 0,
+        speed: lastReading.speed,
+        heading: heading !== -1 ? heading : undefined,
+        sessionId: sessionIdRef.current ?? undefined,
+      });
+    };
+
+    const onPotholeReady = async (potholeClass: number, lastReading: SensorReading) => {
+      const { latitude, longitude, heading } = lastReading.location;
+      if (latitude === 0 && longitude === 0) return;
+
+      // Update current quality indicator on screen
+      setCurrentQuality(potholeClass as RoadQuality);
+
+      // Only overlay hazard classes on map (Patches, Med Pothole, Big Pothole)
+      if (potholeClass >= 1) {
+        const mappedIriScore = [0.8, 1.8, 3.0, 5.0][potholeClass];
+        
+        // Add to live potholes list
+        setLivePotholePoints(prev => [...prev, {
+          latitude,
+          longitude,
+          iriScore: mappedIriScore,
+        }]);
+
+        // Submit observation to backend
+        await observationService.submit({
+          latitude,
+          longitude,
+          iriScore: mappedIriScore,
+          hasPothole: true,
+          potholeConfidence: 0.9,
+          speed: lastReading.speed,
+          heading: heading !== -1 ? heading : undefined,
+          sessionId: sessionIdRef.current ?? undefined,
+        });
+      }
+    };
+
     const monitorBgTask = async (taskData?: any) => {
       await new Promise<void>(async (resolve) => {
-        windowManager.init(async (windowData) => {
-          // Run ML inference
-          const prediction = await mlService.predict(windowData);
-          const quality = (prediction ?? 0) as RoadQuality;
-          setCurrentQuality(quality);
+        // Initialize window manager with callbacks and selected vehicle
+        windowManager.init(onIriReady, onPotholeReady, selectedVehId);
 
-          const last = windowData[windowData.length - 1];
-          const { latitude, longitude } = last.location;
-          if (latitude === 0 && longitude === 0) return;
-
-          // Map quality class to IRI score (rough mapping for backend)
-          const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
-          const hasPothole = quality >= 3;
-
-          await observationService.submit({
-            latitude,
-            longitude,
-            iriScore,
-            hasPothole,
-            potholeConfidence: hasPothole ? 0.9 : 0,
-            speed: last.speed,
-            heading: last.location.heading !== -1 ? last.location.heading : undefined,
-            sessionId: sessionIdRef.current ?? undefined,
-          });
-        });
-
+        // Start 50Hz sensor collection
         sensorService.startCollection((reading) => {
           windowManager.add(reading);
         });
 
         // Loop to keep background actions alive
         while (BackgroundActions.isRunning()) {
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise<void>((r) => setTimeout(r, 1000));
         }
 
         resolve();
@@ -254,30 +355,7 @@ export const MapScreen = ({ navigation }: any) => {
     } catch (e) {
       console.error('[BackgroundService] Failed to start:', e);
       // Fallback to normal foreground monitoring if background actions fails
-      windowManager.init(async (windowData) => {
-        const prediction = await mlService.predict(windowData);
-        const quality = (prediction ?? 0) as RoadQuality;
-        setCurrentQuality(quality);
-
-        const last = windowData[windowData.length - 1];
-        const { latitude, longitude } = last.location;
-        if (latitude === 0 && longitude === 0) return;
-
-        const iriScore = [0.8, 1.8, 3.0, 5.0][quality];
-        const hasPothole = quality >= 3;
-
-        await observationService.submit({
-          latitude,
-          longitude,
-          iriScore,
-          hasPothole,
-          potholeConfidence: hasPothole ? 0.9 : 0,
-          speed: last.speed,
-          heading: last.location.heading !== -1 ? last.location.heading : undefined,
-          sessionId: sessionIdRef.current ?? undefined,
-        });
-      });
-
+      windowManager.init(onIriReady, onPotholeReady, selectedVehId);
       sensorService.startCollection((reading) => {
         windowManager.add(reading);
       });
@@ -296,16 +374,21 @@ export const MapScreen = ({ navigation }: any) => {
     setMonitoring(false);
     setCurrentQuality(null);
     sessionIdRef.current = null;
+    setLiveIriPoints([]);
+    setLivePotholePoints([]);
   }, []);
 
   const toggleMonitoring = () => {
-    monitoring ? stopMonitoring() : startMonitoring();
+    if (monitoring) {
+      stopMonitoring();
+    } else {
+      setShowVehicleModal(true); // Prompt vehicle selection first
+    }
   };
 
   // ─── GeoJSON sources ──────────────────────────────────────────────────────────
-  const segmentGeoJSON  = buildSegmentGeoJSON(segments);
-  const potholeGeoJSON  = buildPotholeGeoJSON(potholes);
-  const segmentCount    = Object.keys(segments).length;
+  const iriGeoJSON = useMemo(() => buildIriGeoJSON(segments, liveIriPoints), [segments, liveIriPoints]);
+  const potholeGeoJSON = useMemo(() => buildPotholeGeoJSON(potholes, livePotholePoints, isDarkMode), [potholes, livePotholePoints, isDarkMode]);
 
   // ─── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -333,44 +416,40 @@ export const MapScreen = ({ navigation }: any) => {
 
         <MapboxGL.UserLocation visible androidRenderMode="compass" />
 
-        {/* Road segment polylines */}
-        {segmentCount > 0 && (
-          <MapboxGL.ShapeSource id="segments" shape={segmentGeoJSON} tolerance={0.5}>
-            {/* Glow / halo layer */}
-            <MapboxGL.LineLayer
-              id="segments-glow"
+        {/* 1. Background IRI Layer (Large Translucent bubbles with smooth gradient) */}
+        {iriGeoJSON.features.length > 0 && (
+          <MapboxGL.ShapeSource id="iri-points-source" shape={iriGeoJSON}>
+            <MapboxGL.CircleLayer
+              id="iri-circles"
               style={{
-                lineColor:   ['get', 'color'],
-                lineWidth:   8,
-                lineOpacity: 0.15,
-                lineBlur:    4,
-              }}
-            />
-            {/* Main coloured polyline */}
-            <MapboxGL.LineLayer
-              id="segments-line"
-              style={{
-                lineColor:    ['get', 'color'],
-                lineWidth:    4,
-                lineOpacity:  0.9,
-                lineCap:      'round',
-                lineJoin:     'round',
+                circleColor: [
+                  'interpolate',
+                  ['linear'],
+                  ['get', 'iriScore'],
+                  0, '#4CAF50',   // Green
+                  4, '#8BC34A',   // Light Green
+                  8, '#FFC107',   // Yellow
+                  12, '#FF9800',  // Orange
+                  15, '#F44336'   // Red (Saturates at red above 15)
+                ],
+                circleRadius: 14,
+                circleOpacity: 0.35,
               }}
             />
           </MapboxGL.ShapeSource>
         )}
 
-        {/* Pothole markers */}
-        {potholes.length > 0 && (
-          <MapboxGL.ShapeSource id="potholes" shape={potholeGeoJSON}>
+        {/* 2. Foreground Pothole Layer (Small Opaque circular pins layered above IRI) */}
+        {potholeGeoJSON.features.length > 0 && (
+          <MapboxGL.ShapeSource id="pothole-points-source" shape={potholeGeoJSON}>
             <MapboxGL.CircleLayer
               id="pothole-circles"
               style={{
-                circleColor:       '#F44336',
-                circleRadius:      8,
-                circleOpacity:     0.9,
+                circleColor: ['get', 'color'],
+                circleRadius: 8,
+                circleOpacity: 1.0,
                 circleStrokeColor: '#FFFFFF',
-                circleStrokeWidth: 2,
+                circleStrokeWidth: 1.5,
               }}
             />
           </MapboxGL.ShapeSource>
@@ -382,7 +461,7 @@ export const MapScreen = ({ navigation }: any) => {
         <View style={styles.topBarLeft}>
           <View style={[styles.dot, { backgroundColor: socketConnected ? COLORS.primary : COLORS.danger }]} />
           <Text style={styles.topBarText}>
-            {socketConnected ? `${segmentCount} segments` : 'Connecting…'}
+            {socketConnected ? `${iriGeoJSON.features.length} points` : 'Connecting…'}
           </Text>
         </View>
         <TouchableOpacity
@@ -407,15 +486,34 @@ export const MapScreen = ({ navigation }: any) => {
 
       {/* ── Legend ── */}
       <View style={styles.legend}>
-        {(['green', 'yellow', 'orange'] as IriCategory[]).map(cat => (
-          <View key={cat} style={styles.legendRow}>
-            <View style={[styles.legendDot, { backgroundColor: IRI_COLORS[cat] }]} />
-            <Text style={styles.legendText}>{IRI_LABELS[cat]}</Text>
+        <Text style={styles.legendHeader}>IRI Scale (Road Quality)</Text>
+        <View style={styles.gradientBarWrapper}>
+          <View style={styles.gradientBarWrapperRow}>
+            <View style={[styles.gradientBarSection, { backgroundColor: '#4CAF50' }]} />
+            <View style={[styles.gradientBarSection, { backgroundColor: '#8BC34A' }]} />
+            <View style={[styles.gradientBarSection, { backgroundColor: '#FFC107' }]} />
+            <View style={[styles.gradientBarSection, { backgroundColor: '#FF9800' }]} />
+            <View style={[styles.gradientBarSection, { backgroundColor: '#F44336' }]} />
           </View>
-        ))}
+          <View style={styles.gradientLabels}>
+            <Text style={styles.gradientLabel}>0 (Good)</Text>
+            <Text style={styles.gradientLabel}>8</Text>
+            <Text style={styles.gradientLabel}>15+ (Bad)</Text>
+          </View>
+        </View>
+        
+        <Text style={[styles.legendHeader, { marginTop: 10 }]}>Hazards</Text>
         <View style={styles.legendRow}>
-          <View style={[styles.legendDot, { backgroundColor: '#F44336' }]} />
-          <Text style={styles.legendText}>Pothole</Text>
+          <View style={[styles.legendDot, { backgroundColor: '#FFC107' }]} />
+          <Text style={styles.legendText}>Patches</Text>
+        </View>
+        <View style={styles.legendRow}>
+          <View style={[styles.legendDot, { backgroundColor: '#FF9800' }]} />
+          <Text style={styles.legendText}>Med Pothole</Text>
+        </View>
+        <View style={styles.legendRow}>
+          <View style={[styles.legendDot, { backgroundColor: isDarkMode ? '#FF0033' : '#800000' }]} />
+          <Text style={styles.legendText}>Big Pothole</Text>
         </View>
       </View>
 
@@ -456,8 +554,60 @@ export const MapScreen = ({ navigation }: any) => {
             {monitoring ? 'Stop Monitoring' : 'Start Monitoring'}
           </Text>
         </TouchableOpacity>
-
       </View>
+
+      {/* ── Vehicle Selection Modal ── */}
+      <Modal
+        visible={showVehicleModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowVehicleModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Vehicle Type</Text>
+            <Text style={styles.modalSubtitle}>
+              The ML models require your vehicle category to calibrate suspension and vibration parameters.
+            </Text>
+
+            <View style={styles.vehicleOptions}>
+              {[
+                { id: 0, label: 'SUV / Multi Utility Vehicle', desc: 'Slower response, higher clearance' },
+                { id: 1, label: 'Hatchback', desc: 'Stiffer suspension, standard clearance' },
+                { id: 2, label: 'Sedan', desc: 'Softer suspension, lower clearance' }
+              ].map(opt => (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[
+                    styles.vehicleCard,
+                    vehicleId === opt.id && styles.vehicleCardSelected
+                  ]}
+                  onPress={() => {
+                    setVehicleId(opt.id);
+                    setShowVehicleModal(false);
+                    // Start monitoring immediately after selection
+                    startMonitoring(opt.id);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.vehicleCardHeader}>
+                    <Text style={styles.vehicleCardLabel}>{opt.label}</Text>
+                    {vehicleId === opt.id && <Text style={styles.checkIcon}>✓</Text>}
+                  </View>
+                  <Text style={styles.vehicleCardDesc}>{opt.desc}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setShowVehicleModal(false)}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -508,11 +658,40 @@ const styles = StyleSheet.create({
     padding:         12,
     borderWidth:     1,
     borderColor:     COLORS.border,
-    gap:             8,
+    width:           170,
   },
-  legendRow: { flexDirection: 'row', alignItems: 'center' },
+  legendHeader: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '700',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  gradientBarWrapper: {
+    marginBottom: 6,
+  },
+  gradientBarWrapperRow: {
+    flexDirection: 'row',
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  gradientBarSection: {
+    flex: 1,
+  },
+  gradientLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  gradientLabel: {
+    color: COLORS.textSecondary,
+    fontSize: 9,
+  },
+  legendRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
-  legendText:{ color: COLORS.textSecondary, fontSize: 12, fontWeight: '500' },
+  legendText:{ color: COLORS.textSecondary, fontSize: 11, fontWeight: '500' },
 
   // Bottom panel
   bottomPanel: {
@@ -569,4 +748,80 @@ const styles = StyleSheet.create({
   monitorBtnIcon:  { fontSize: 18 },
   monitorBtnText:  { color: '#fff', fontWeight: '700', fontSize: 16 },
   btnDisabled:     { opacity: 0.45 },
+
+  // Modal Backdrop & Content
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20
+  },
+  modalContent: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  modalTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  modalSubtitle: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 18,
+  },
+  vehicleOptions: {
+    gap: 12,
+    marginBottom: 20,
+  },
+  vehicleCard: {
+    backgroundColor: COLORS.surfaceLight,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    padding: 16,
+  },
+  vehicleCardSelected: {
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(0, 200, 83, 0.05)',
+  },
+  vehicleCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  vehicleCardLabel: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  checkIcon: {
+    color: COLORS.primary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  vehicleCardDesc: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+  },
+  cancelBtn: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  cancelBtnText: {
+    color: COLORS.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });
