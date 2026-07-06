@@ -65,16 +65,14 @@ function buildPotholeGeoJSON(potholes: MapPoint[], livePotholes: any[], isDarkMo
   const getPotholeColor = (score: number) => {
     if (score >= 4.0) {
       return isDarkMode ? '#FF0033' : '#800000'; // Neon red vs Maroon
-    } else if (score >= 2.5) {
-      return '#FF9800'; // Orange (Med Pothole)
     } else {
-      return '#FFC107'; // Yellow (Patches)
+      return '#FF9800'; // Orange (Med Pothole)
     }
   };
 
   // 1. Historical Potholes
   potholes.forEach((p, i) => {
-    if (p.hasPothole) {
+    if (p.iriScore >= 2.5) { // Only render Med Pothole (>=2.5) and Big Pothole (>=4.0)
       features.push({
         type: 'Feature' as const,
         id: `pothole_${i}`,
@@ -92,18 +90,20 @@ function buildPotholeGeoJSON(potholes: MapPoint[], livePotholes: any[], isDarkMo
 
   // 2. Live Potholes
   livePotholes.forEach((p, i) => {
-    features.push({
-      type: 'Feature' as const,
-      id: `live_pothole_${i}`,
-      properties: {
-        iriScore: p.iriScore,
-        color: getPotholeColor(p.iriScore),
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [p.longitude, p.latitude],
-      },
-    });
+    if (p.iriScore >= 2.5) { // Only render Med Pothole and Big Pothole
+      features.push({
+        type: 'Feature' as const,
+        id: `live_pothole_${i}`,
+        properties: {
+          iriScore: p.iriScore,
+          color: getPotholeColor(p.iriScore),
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [p.longitude, p.latitude],
+        },
+      });
+    }
   });
 
   return { type: 'FeatureCollection' as const, features };
@@ -521,10 +521,6 @@ export const MapScreen = ({ navigation }: any) => {
         </View>
         
         <Text style={[styles.legendHeader, { marginTop: 10 }]}>Hazards</Text>
-        <View style={styles.legendRow}>
-          <View style={[styles.legendDot, { backgroundColor: '#FFC107' }]} />
-          <Text style={styles.legendText}>Patches</Text>
-        </View>
         <View style={styles.legendRow}>
           <View style={[styles.legendDot, { backgroundColor: '#FF9800' }]} />
           <Text style={styles.legendText}>Med Pothole</Text>
